@@ -403,6 +403,13 @@ class ISAParser:
             titles = [s.get("title", "") for s in self.data.get("studies", [])]
             return f"Study '{study_title}' not found. Available studies: {titles}"
 
+        wrapper_overview = None
+        if self.wrapper is not None:
+            try:
+                wrapper_overview = self.wrapper.study(study_title).overview()
+            except Exception:
+                pass
+
         protocols = []
         for proto in study.get("protocols", []):
             params = []
@@ -442,9 +449,9 @@ class ISAParser:
             })
 
         return {
-            "title": study.get("title", ""),
-            "description": study.get("description", ""),
-            "identifier": study.get("identifier", ""),
+            "title": wrapper_overview.title if wrapper_overview else study.get("title", ""),
+            "description": wrapper_overview.description if wrapper_overview else study.get("description", ""),
+            "identifier": wrapper_overview.study_id if wrapper_overview else study.get("identifier", ""),
             "submission_date": study.get("submissionDate", ""),
             "public_release_date": study.get("publicReleaseDate", ""),
             "study_design_descriptors": [d for d in design_descriptors if d],
@@ -466,11 +473,26 @@ class ISAParser:
             aliases = [self._assay_alias(a) for a in study.get("assays", [])]
             return f"Sensor '{sensor_alias}' not found in study '{study_title}'. Available sensors: {aliases}"
 
-        mtype = self._assay_measurement_type(assay)
-        technology_type = assay.get("technologyType", {}).get("annotationValue", "")
-        technology_platform = assay.get("technologyPlatform", "")
+        wrapper_overview = None
+        if self.wrapper is not None:
+            try:
+                assay_id = assay.get("filename", "")
+                wrapper_overview = self.wrapper.study(study_title).assay(assay_id).overview()
+            except Exception:
+                pass
 
-        data_files = [df.get("name", "") for df in assay.get("dataFiles", [])]
+        mtype = wrapper_overview.measurement_type if wrapper_overview else self._assay_measurement_type(assay)
+        technology_type = wrapper_overview.technology_type if wrapper_overview else assay.get("technologyType", {}).get("annotationValue", "")
+        technology_platform = wrapper_overview.technology_platform if wrapper_overview else assay.get("technologyPlatform", "")
+
+        data_files = (
+            [
+                path for run in wrapper_overview.runs
+                for path in (run.raw_file_path, run.processed_file_path)
+                if path
+            ]
+            if wrapper_overview else [df.get("name", "") for df in assay.get("dataFiles", [])]
+        )
 
         process_params = []
         for proc in assay.get("processSequence", []):

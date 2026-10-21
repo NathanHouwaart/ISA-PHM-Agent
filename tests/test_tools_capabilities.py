@@ -76,6 +76,16 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertEqual(studies[0]["identifier"], "mini-study-001")
         self.assertEqual(studies[0]["number_of_assays"], 1)
 
+    def test_parser_study_and_assay_details_use_wrapper_structure(self):
+        parser = load_from_file(str(FIXTURE))
+
+        study = parser.get_study_details("Mini Diagnostic Study")
+        assay = parser.get_assay_details("Mini Diagnostic Study", "mini-vibration")
+
+        self.assertEqual(study["identifier"], "mini-study-001")
+        self.assertEqual(assay["measurement_type"], "Vibration")
+        self.assertEqual(assay["number_of_data_files"], 2)
+
     def test_fixture_exposes_frequency_domain_capability(self):
         parser = load_from_file(str(FIXTURE))
         result = json.loads(execute_tool(
