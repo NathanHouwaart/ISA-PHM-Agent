@@ -1,0 +1,65 @@
+{
+  "identifier": "diagnostic-signal-mini",
+  "title": "Diagnostic Signal Mini",
+  "description": "Neutral two-run vibration fixture for ISA-PHM Wrapper and Agent tests.",
+  "comments": [
+    {"name": "ud_identifier", "value": "diagnostic-signal-mini"},
+    {"name": "experiment_type", "value": "diagnostic-single"}
+  ],
+  "ontologySourceReferences": [],
+  "people": [],
+  "studies": [
+    {
+      "@id": "#study/mini",
+      "identifier": "mini-study-001",
+      "title": "Mini Diagnostic Study",
+      "description": "A compact fixture with an explicit sampling rate.",
+      "comments": [],
+      "factors": [],
+      "protocols": [
+        {
+          "@id": "#protocol/measurement",
+          "name": "Vibration measurement",
+          "comments": [{"name": "Sensor id", "value": "sensor-mini-01"}],
+          "protocolType": {"annotationValue": "Measurement Protocol", "termAccession": "", "termSource": "", "comments": []},
+          "parameters": [
+            {"@id": "#protocol_parameter/sampling_rate", "parameterName": {"annotationValue": "Sampling Rate", "termAccession": "", "termSource": "", "comments": []}},
+            {"@id": "#protocol_parameter/measured_unit", "parameterName": {"annotationValue": "Measured Unit", "termAccession": "", "termSource": "", "comments": []}}
+          ]
+        },
+        {
+          "@id": "#protocol/processing",
+          "name": "Signal processing",
+          "comments": [],
+          "protocolType": {"annotationValue": "Data Transformation", "termAccession": "", "termSource": "", "comments": []},
+          "parameters": []
+        }
+      ],
+      "materials": {"sources": [], "samples": [{"@id": "#sample/mini-01", "name": "Mini run sample", "comments": [], "factorValues": []}]},
+      "assays": [
+        {
+          "@id": "#assay/mini-vibration",
+          "filename": "a_mini_vibration",
+          "comments": [{"name": "sensor alias", "value": "mini-vibration"}],
+          "measurementType": {"annotationValue": "Vibration", "termAccession": "", "termSource": "", "comments": []},
+          "technologyType": {"annotationValue": "Accelerometer", "termAccession": "", "termSource": "", "comments": []},
+          "technologyPlatform": "Generic accelerometer",
+          "unitCategories": [],
+          "materials": {"samples": [{"@id": "#sample/mini-01"}], "otherMaterials": []},
+          "dataFiles": [
+            {"@id": "#data_file/raw-01", "name": "", "type": "Raw Data File", "comments": []},
+            {"@id": "#data_file/processed-01", "name": "data/processed/run_01.csv", "type": "Processed Data File", "comments": []},
+            {"@id": "#data_file/raw-02", "name": "", "type": "Raw Data File", "comments": []},
+            {"@id": "#data_file/processed-02", "name": "data/processed/run_02.csv", "type": "Processed Data File", "comments": []}
+          ],
+          "processSequence": [
+            {"@id": "#process/measure-01", "comments": [], "executesProtocol": {"@id": "#protocol/measurement"}, "inputs": [{"@id": "#sample/mini-01"}], "outputs": [{"@id": "#data_file/raw-01"}], "parameterValues": [{"category": {"@id": "#protocol_parameter/sampling_rate"}, "value": 25600, "unit": {"annotationValue": "Hz", "termAccession": "", "termSource": "", "comments": []}}, {"category": {"@id": "#protocol_parameter/measured_unit"}, "value": "g"}], "nextProcess": {"@id": "#process/process-01"}},
+            {"@id": "#process/process-01", "comments": [], "executesProtocol": {"@id": "#protocol/processing"}, "inputs": [{"@id": "#data_file/raw-01"}], "outputs": [{"@id": "#data_file/processed-01"}], "parameterValues": [], "previousProcess": {"@id": "#process/measure-01"}, "nextProcess": {"@id": "#process/measure-02"}},
+            {"@id": "#process/measure-02", "comments": [], "executesProtocol": {"@id": "#protocol/measurement"}, "inputs": [{"@id": "#sample/mini-01"}], "outputs": [{"@id": "#data_file/raw-02"}], "parameterValues": [{"category": {"@id": "#protocol_parameter/sampling_rate"}, "value": 25600, "unit": {"annotationValue": "Hz", "termAccession": "", "termSource": "", "comments": []}}, {"category": {"@id": "#protocol_parameter/measured_unit"}, "value": "g"}], "previousProcess": {"@id": "#process/process-01"}, "nextProcess": {"@id": "#process/process-02"}},
+            {"@id": "#process/process-02", "comments": [], "executesProtocol": {"@id": "#protocol/processing"}, "inputs": [{"@id": "#data_file/raw-02"}], "outputs": [{"@id": "#data_file/processed-02"}], "parameterValues": [], "previousProcess": {"@id": "#process/measure-02"}}
+          ]
+        }
+      ]
+    }
+  ]
+}
