@@ -86,6 +86,15 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertEqual(assay["measurement_type"], "Vibration")
         self.assertEqual(assay["number_of_data_files"], 2)
 
+    def test_data_file_inventory_uses_wrapper_run_summaries(self):
+        parser = load_from_file(str(FIXTURE))
+
+        files = parser.list_data_files("Mini Diagnostic Study", "mini-vibration")
+
+        self.assertEqual(len(files), 2)
+        self.assertTrue(all(row["type"] == "Processed Data File" for row in files))
+        self.assertTrue(all(row["file"].endswith(".csv") for row in files))
+
     def test_fixture_exposes_frequency_domain_capability(self):
         parser = load_from_file(str(FIXTURE))
         result = json.loads(execute_tool(

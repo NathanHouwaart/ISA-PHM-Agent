@@ -536,6 +536,47 @@ class ISAParser:
         }
 
     def list_data_files(self, study_title: str | None = None, sensor_alias: str | None = None) -> list | str:
+        if self.wrapper is not None:
+            try:
+                if study_title is not None:
+                    study_proxies = [self.wrapper.study(study_title)]
+                else:
+                    study_proxies = [
+                        self.wrapper.study(summary.study_id)
+                        for summary in self.wrapper.list_studies()
+                    ]
+                results = []
+                for study_proxy in study_proxies:
+                    summaries = study_proxy.list_assays()
+                    for summary in summaries:
+                        # Agent aliases may differ from Wrapper assay IDs; resolve
+                        # the user-facing alias once, then keep all file traversal
+                        # inside Wrapper public run summaries.
+                        if sensor_alias is not None:
+                            mapped = self.get_assay_filename(study_proxy.title, sensor_alias)
+                            if mapped != summary.assay_id:
+                                continue
+                        assay_proxy = study_proxy.assay(summary.assay_id)
+                        for run in assay_proxy.list_runs():
+                            if run.raw_file_path:
+                                results.append({
+                                    "study": study_proxy.title,
+                                    "sensor": sensor_alias or summary.sensor_alias,
+                                    "file": run.raw_file_path,
+                                    "type": "Raw Data File",
+                                })
+                            if run.processed_file_path:
+                                results.append({
+                                    "study": study_proxy.title,
+                                    "sensor": sensor_alias or summary.sensor_alias,
+                                    "file": run.processed_file_path,
+                                    "type": "Processed Data File",
+                                })
+                return _cap_list(results, "data_files")
+            except Exception:
+                # Preserve the legacy parser path for malformed/incomplete uploads.
+                pass
+
         studies = self.data.get("studies", [])
         if study_title:
             study = self._find_study(study_title)
