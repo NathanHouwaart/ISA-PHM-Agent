@@ -48,7 +48,7 @@ The system has four layers. Every user query travels through all of them.
 +--------------------------------------------------------------+
 |  Data Layer                                                  |
 |  ISAParser (in-house, isa_parser.py) — hierarchy queries     |
-|  ISAWrapper (vendored, isa_phm/) — CSV + lifecycle + plots   |
+|  ISAWrapper (Git submodule, vendor/isa-phm-wrapper/) — CSV + lifecycle + plots |
 +--------------------------------------------------------------+
 ```
 
@@ -82,9 +82,10 @@ Requirements:
 - ISA-JSON files and the matching CSV measurements
 
 ```bash
-cd Prototype
-python3.13 -m pip install -r requirements.txt
-streamlit run app.py
+git clone --recurse-submodules https://github.com/NathanHouwaart/ISA-PHM-Agent.git
+cd ISA-PHM-Agent
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
 In the Streamlit UI:
@@ -247,13 +248,14 @@ inconsistencies in real-world files (missing optional fields, mislocated
 nodes, ID collisions), which means the in-house parser can assume a
 clean dictionary.
 
-### ISAWrapper (vendored)
+### ISAWrapper (Git submodule)
 
 The wrapper is the load-bearing data layer of the application. Anything
-that touches an ISA-JSON file or a CSV on disk passes through it. The
-full ISA-PHM Data Engineering Wrapper is bundled into `isa_phm/`, which
-makes the application self-contained and removes the need for a
-separate pip install. Modules of interest:
+that touches an ISA-JSON file or a CSV on disk passes through it. The full
+ISA-PHM Data Engineering Wrapper is a pinned Git submodule in
+`vendor/isa-phm-wrapper/`, installed by `pip install -r requirements.txt`.
+Clone with `git clone --recurse-submodules ...`, or initialise it later with
+`git submodule update --init --recursive`. Modules of interest:
 
 - `wrapper.py` — the `ISAWrapper` class, the entry point to the data path.
 - `parser.py` and `preprocessor.py` — the ISA-JSON parser and the

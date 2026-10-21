@@ -1,0 +1,3 @@
+[submodule "vendor/isa-phm-wrapper"]
+	path = vendor/isa-phm-wrapper
+	url = https://github.com/NathanHouwaart/ISA-PHM-Wrapper.git
