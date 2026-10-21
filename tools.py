@@ -1605,40 +1605,61 @@ _WORKING_COPY_PLOT_KINDS = {
     "missing_values", "outlier_comparison",
 }
 
+_FREQUENCY_PLOT_KINDS = {"fft", "psd", "spectrogram", "waterfall"}
 
-def _render_single_run_plot(assay_proxy, kind: str, working_df, title: str):
+
+def _frequency_capability(assay_proxy, run_id: str | None = None) -> tuple[float | None, dict | None]:
+    """Resolve sampling frequency through Wrapper's public capability API."""
+    capabilities = (
+        assay_proxy.run(run_id).analysis_capabilities()
+        if run_id is not None
+        else assay_proxy.analysis_capabilities()
+    )
+    if not capabilities.frequency_domain.available:
+        return None, {
+            "status": "analysis_unavailable",
+            "analysis": "frequency_domain",
+            "reason": capabilities.frequency_domain.reason,
+            "sampling_frequency": _jsonify(capabilities.sampling_frequency),
+            "message": (
+                "Frequency-domain analysis is unavailable for this selection. "
+                "Provide an explicit Sampling Rate / Sampling Frequency / fs "
+                "measurement parameter with a valid Hz-family unit."
+            ),
+        }
+    return float(capabilities.sampling_frequency.value), None
+
+
+def _render_single_run_plot(assay_proxy, kind: str, working_df, title: str, run_id: str):
     """Render a single-run plot from an in-memory DataFrame (a cleaned working
     copy), so plots reflect process_signal transforms. Methods that accept df=
     are used directly; the rest call the underlying ISAPlotter with the same fs/
     label inference the wrapper applies. Returns a Bokeh figure or an error dict.
     outlier_comparison is handled by the caller (it needs the raw df too)."""
-    plotter = assay_proxy._plotter
+    from isa_phm import ISAPlotter
+
+    plotter = ISAPlotter()
     if kind == "distribution":
         return assay_proxy.plot_distribution(df=working_df, title=title)
     if kind == "fft":
+        fs, error = _frequency_capability(assay_proxy, run_id)
+        if error is not None:
+            return error
         return assay_proxy.plot_frequency_domain(
-            df=working_df, fs=assay_proxy._infer_fs(), title=title
+            df=working_df, fs=fs, title=title
         )
     if kind == "timeseries":
         return plotter.plot_timeseries(
-            working_df, xlabel="time", ylabel=assay_proxy._ylabel(), title=title
+            working_df, xlabel="time", ylabel="value", title=title
         )
     if kind == "missing_values":
         return plotter.plot_missing_values(working_df, title=title)
-    fs = assay_proxy._infer_fs()
+    fs, error = _frequency_capability(assay_proxy, run_id)
+    if error is not None:
+        return error
     if kind == "psd":
-        if fs is None:
-            return {"error": (
-                "psd needs a sampling frequency, which could not be inferred from "
-                "the protocol. Re-run make_plot from raw data or add an Hz parameter."
-            )}
         return plotter.plot_power_spectral_density(working_df, fs=fs, title=title)
     if kind == "spectrogram":
-        if fs is None:
-            return {"error": (
-                "spectrogram needs a sampling frequency, which could not be inferred "
-                "from the protocol."
-            )}
         return plotter.plot_spectrogram(working_df, fs=fs, title=title)
     return {"error": f"kind='{kind}' cannot render from a working copy."}
 
@@ -1730,6 +1751,10 @@ def _make_plot_via_wrapper(
 
     # Multi-run single-sensor kinds — no run_id needed.
     if kind in _MULTI_RUN_KINDS:
+        if kind == "waterfall":
+            _, error = _frequency_capability(assay_proxy)
+            if error is not None:
+                return error
         try:
             if kind == "lifecycle":
                 fig = assay_proxy.plot_lifecycle(feature=feature, file_type="auto")
@@ -1748,6 +1773,10 @@ def _make_plot_via_wrapper(
 
     # Per-run single-sensor kinds — resolve a run_id (default: last run).
     run_id = _resolve_run_id(parser, assay_proxy, study_title, sensor_alias, relative_path)
+    if kind in _FREQUENCY_PLOT_KINDS:
+        _, error = _frequency_capability(assay_proxy, None if kind == "waterfall" else run_id)
+        if error is not None:
+            return error
 
     wc = working_copies.get(_wc_key(dataset_name, study_title, sensor_alias, run_id))
     suffix = f"{kind} (cleaned)" if wc is not None else kind
@@ -1760,7 +1789,7 @@ def _make_plot_via_wrapper(
                 df_raw = assay_proxy.load_dataframe(run_id=run_id, file_type="auto")
                 fig = assay_proxy.plot_outlier_comparison(df_raw, wc["df"], title=title)
             else:
-                fig = _render_single_run_plot(assay_proxy, kind, wc["df"], title)
+                fig = _render_single_run_plot(assay_proxy, kind, wc["df"], title, run_id)
         elif kind == "timeseries":
             fig = assay_proxy.plot_timeseries(run_id=run_id, file_type="auto")
         elif kind == "fft":
