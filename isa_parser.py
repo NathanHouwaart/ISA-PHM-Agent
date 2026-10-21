@@ -329,6 +329,14 @@ class ISAParser:
 
     def get_investigation_overview(self) -> dict:
         d = self.data
+        wrapper_overview = None
+        if self.wrapper is not None:
+            try:
+                wrapper_overview = self.wrapper.investigation_overview()
+            except Exception:
+                # The raw ISA view remains a compatibility fallback for uploads
+                # that can be inspected before Wrapper attachment succeeds.
+                wrapper_overview = None
         people = []
         for p in d.get("people", []):
             roles = [r.get("annotationValue", "") for r in p.get("roles", [])]
@@ -348,19 +356,28 @@ class ISAParser:
             })
 
         return {
-            "description": d.get("description", ""),
-            "identifier": d.get("identifier", ""),
-            "experiment_type": self._comment_value(d.get("comments", []), "experiment_type"),
+            "description": wrapper_overview.description if wrapper_overview else d.get("description", ""),
+            "identifier": wrapper_overview.identifier if wrapper_overview else d.get("identifier", ""),
+            "experiment_type": wrapper_overview.experiment_type if wrapper_overview else self._comment_value(d.get("comments", []), "experiment_type"),
             "license": self._comment_value(d.get("comments", []), "license"),
             "public_release_date": d.get("publicReleaseDate", ""),
             "people": people,
             "publications": publications,
-            "number_of_studies": len(d.get("studies", [])),
+            "number_of_studies": wrapper_overview.n_studies if wrapper_overview else len(d.get("studies", [])),
         }
 
     def list_studies(self) -> list:
+        wrapper_summaries = {}
+        if self.wrapper is not None:
+            try:
+                wrapper_summaries = {
+                    summary.title: summary for summary in self.wrapper.list_studies()
+                }
+            except Exception:
+                pass
         result = []
         for s in self.data.get("studies", []):
+            wrapper_summary = wrapper_summaries.get(s.get("title", ""))
             assay_aliases = []
             for a in s.get("assays", []):
                 alias = self._assay_alias(a)
@@ -370,10 +387,10 @@ class ISAParser:
             result.append({
                 "title": s.get("title", ""),
                 "description": s.get("description", ""),
-                "identifier": s.get("identifier", ""),
+                "identifier": wrapper_summary.study_id if wrapper_summary else s.get("identifier", ""),
                 "submission_date": s.get("submissionDate", ""),
                 "public_release_date": s.get("publicReleaseDate", ""),
-                "number_of_assays": len(s.get("assays", [])),
+                "number_of_assays": wrapper_summary.n_assays if wrapper_summary else len(s.get("assays", [])),
                 "sensor_aliases": assay_aliases,
                 "number_of_samples": len(s.get("materials", {}).get("samples", [])),
                 "factors": [f.get("factorName", "") for f in s.get("factors", [])],

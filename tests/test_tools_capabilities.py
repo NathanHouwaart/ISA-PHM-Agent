@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import sys
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools import _frequency_capability
+from isa_parser import load_from_file
+from tools import _frequency_capability, execute_tool
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "diagnostic-signal-mini" / "i_investigation.json"
 
 
 class _Run:
@@ -58,3 +63,32 @@ class FrequencyCapabilityTests(unittest.TestCase):
 
         self.assertEqual(fs, 25_600.0)
         self.assertIsNone(error)
+
+
+class DiagnosticSignalMiniTests(unittest.TestCase):
+    def test_parser_overview_uses_wrapper_public_summaries_when_attached(self):
+        parser = load_from_file(str(FIXTURE))
+
+        overview = parser.get_investigation_overview()
+        studies = parser.list_studies()
+
+        self.assertEqual(overview["number_of_studies"], 1)
+        self.assertEqual(studies[0]["identifier"], "mini-study-001")
+        self.assertEqual(studies[0]["number_of_assays"], 1)
+
+    def test_fixture_exposes_frequency_domain_capability(self):
+        parser = load_from_file(str(FIXTURE))
+        result = json.loads(execute_tool(
+            "get_analysis_capabilities",
+            {
+                "dataset_name": "mini",
+                "study_title": "Mini Diagnostic Study",
+                "sensor_alias": "mini-vibration",
+            },
+            {"mini": parser},
+        ))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["scope"], "assay")
+        self.assertTrue(result["capabilities"]["frequency_domain"]["available"])
+        self.assertEqual(result["capabilities"]["sampling_frequency"]["value"], 25_600.0)
