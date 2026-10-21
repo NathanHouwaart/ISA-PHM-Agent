@@ -1307,10 +1307,8 @@ class ISAParser:
                         "unit": factor.unit or "",
                     })
 
-                # Characteristics and design descriptors are not represented in
-                # the Wrapper model yet, so retain these small static metadata
-                # reads until the Wrapper exposes them as public summaries.
-                for _, characteristic_name in self._characteristic_index(study).items():
+                for characteristic in study_proxy.list_characteristic_categories():
+                    characteristic_name = characteristic.name
                     buckets[self._bucket_key(characteristic_name)].append({
                         "source": "characteristic_category",
                         "name": characteristic_name,
@@ -1373,11 +1371,7 @@ class ISAParser:
                 return {
                     "study": study_proxy.title,
                     "n_runs": study_proxy.run_count,
-                    "study_design_descriptors": [
-                        descriptor.get("annotationValue", "")
-                        for descriptor in study.get("studyDesignDescriptors", [])
-                        if descriptor.get("annotationValue")
-                    ],
+                    "study_design_descriptors": study_proxy.list_design_descriptors(),
                     "buckets": {
                         "rig_and_configuration": buckets["rig"],
                         "fault_introduction": buckets["fault_intro"],

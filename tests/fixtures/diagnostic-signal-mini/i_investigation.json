@@ -16,6 +16,12 @@
       "description": "A compact fixture with an explicit sampling rate.",
       "comments": [],
       "factors": [],
+      "studyDesignDescriptors": [
+        {"annotationValue": "Diagnostic study"}
+      ],
+      "characteristicCategories": [
+        {"@id": "#characteristic/mounting", "annotationValue": "Sensor mounting"}
+      ],
       "protocols": [
         {
           "@id": "#protocol/measurement",

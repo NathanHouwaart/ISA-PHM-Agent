@@ -116,6 +116,11 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertEqual(sampling["value"], 25_600)
         self.assertEqual(sampling["unit"], "Hz")
         self.assertEqual(sampling["protocol"], "Vibration measurement")
+        self.assertEqual(details["study_design_descriptors"], ["Diagnostic study"])
+        self.assertEqual(
+            details["buckets"]["sensor_placement"],
+            [{"source": "characteristic_category", "name": "Sensor mounting"}],
+        )
 
     def test_fixture_exposes_frequency_domain_capability(self):
         parser = load_from_file(str(FIXTURE))
