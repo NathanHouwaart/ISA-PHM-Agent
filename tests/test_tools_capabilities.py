@@ -105,6 +105,18 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertTrue(all(run["sensor_alias"] == "mini-vibration" for run in inventory["runs"]))
         self.assertTrue(all(len(run["data_files"]) == 1 for run in inventory["runs"]))
 
+    def test_protocol_details_use_wrapper_protocol_and_parameter_apis(self):
+        parser = load_from_file(str(FIXTURE))
+
+        details = parser.get_protocol_details("Mini Diagnostic Study")
+
+        self.assertEqual(details["n_runs"], 2)
+        self.assertEqual(details["assays"][0]["sensor_alias"], "mini-vibration")
+        sampling = details["assays"][0]["parameters"]["Sampling Rate"]
+        self.assertEqual(sampling["value"], 25_600)
+        self.assertEqual(sampling["unit"], "Hz")
+        self.assertEqual(sampling["protocol"], "Vibration measurement")
+
     def test_fixture_exposes_frequency_domain_capability(self):
         parser = load_from_file(str(FIXTURE))
         result = json.loads(execute_tool(

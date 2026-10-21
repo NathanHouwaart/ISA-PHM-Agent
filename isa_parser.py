@@ -1293,6 +1293,107 @@ class ISAParser:
             titles = [s.get("title", "") for s in self.data.get("studies", [])]
             return f"Study '{study_title}' not found. Available studies: {titles}"
 
+        if self.wrapper is not None:
+            try:
+                study_proxy = self.wrapper.study(study_title)
+                buckets: dict[str, list] = {
+                    bucket: [] for bucket in list(self._REPL_BUCKETS.keys()) + ["other"]
+                }
+                for factor in study_proxy.list_factors():
+                    buckets[self._bucket_key(factor.factor_name)].append({
+                        "source": "study_factor",
+                        "name": factor.factor_name,
+                        "type": factor.factor_type,
+                        "unit": factor.unit or "",
+                    })
+
+                # Characteristics and design descriptors are not represented in
+                # the Wrapper model yet, so retain these small static metadata
+                # reads until the Wrapper exposes them as public summaries.
+                for _, characteristic_name in self._characteristic_index(study).items():
+                    buckets[self._bucket_key(characteristic_name)].append({
+                        "source": "characteristic_category",
+                        "name": characteristic_name,
+                    })
+
+                per_assay = []
+                for summary in study_proxy.list_assays():
+                    assay_proxy = study_proxy.assay(summary.assay_id)
+                    assay_overview = assay_proxy.overview()
+                    protocols = assay_proxy.list_protocols()
+                    measurement_protocol = next(
+                        (
+                            protocol.name for protocol in protocols
+                            if "measurement" in protocol.protocol_type.lower()
+                        ),
+                        "",
+                    )
+                    processing_protocol = next(
+                        (
+                            protocol.name for protocol in protocols
+                            if "processing" in protocol.protocol_type.lower()
+                            or "transformation" in protocol.protocol_type.lower()
+                        ),
+                        "",
+                    )
+                    assay_params: dict[str, dict] = {}
+                    for params, protocol_name in (
+                        (assay_proxy.list_measurement_params(), measurement_protocol),
+                        (assay_proxy.list_processing_params(), processing_protocol),
+                    ):
+                        for parameter in params.to_dict("records"):
+                            name = parameter["parameter_name"]
+                            if name in assay_params:
+                                continue
+                            entry = {
+                                "value": parameter["value"],
+                                "unit": parameter["unit"],
+                                "protocol": protocol_name,
+                            }
+                            assay_params[name] = entry
+                            buckets[self._bucket_key(name)].append({
+                                "source": f"assay/{assay_overview.sensor_alias}",
+                                "name": name,
+                                **entry,
+                            })
+
+                    per_assay.append({
+                        "sensor_alias": assay_overview.sensor_alias,
+                        "measurement_type": assay_overview.measurement_type,
+                        "technology_type": assay_overview.technology_type,
+                        "technology_platform": assay_overview.technology_platform,
+                        "n_data_files": sum(
+                            int(run.raw_file_path is not None)
+                            + int(run.processed_file_path is not None)
+                            for run in assay_overview.runs
+                        ),
+                        "parameters": assay_params,
+                    })
+
+                return {
+                    "study": study_proxy.title,
+                    "n_runs": study_proxy.run_count,
+                    "study_design_descriptors": [
+                        descriptor.get("annotationValue", "")
+                        for descriptor in study.get("studyDesignDescriptors", [])
+                        if descriptor.get("annotationValue")
+                    ],
+                    "buckets": {
+                        "rig_and_configuration": buckets["rig"],
+                        "fault_introduction": buckets["fault_intro"],
+                        "operating_conditions": buckets["operating_condition"],
+                        "sensor_placement": buckets["placement"],
+                        "sampling_and_acquisition": buckets["sampling"],
+                        "filter_settings": buckets["filter"],
+                        "amplifier_settings": buckets["amplifier"],
+                        "other": buckets["other"],
+                    },
+                    "assays": per_assay,
+                }
+            except Exception:
+                # Preserve the legacy parser path for malformed/incomplete uploads.
+                pass
+
         # Per-study buckets accumulated across all assays
         buckets: dict[str, list] = {b: [] for b in list(self._REPL_BUCKETS.keys()) + ["other"]}
 
