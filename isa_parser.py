@@ -1042,13 +1042,73 @@ class ISAParser:
         }
 
     def get_run_inventory(self, study_title: str) -> dict | str:
-        """Per-sample run inventory for a study: sample name, factor values
-        (resolved by factor name), and the data-file paths from each assay that
-        share its @id."""
+        """Return the study's run inventory, including files and parameters.
+
+        When the standalone Wrapper is attached, its public run summaries are
+        authoritative.  The legacy JSON traversal remains only as a fallback
+        for incomplete uploads that the Wrapper cannot parse.
+        """
         study = self._find_study(study_title)
         if study is None:
             titles = [s.get("title", "") for s in self.data.get("studies", [])]
             return f"Study '{study_title}' not found. Available studies: {titles}"
+
+        if self.wrapper is not None:
+            try:
+                study_proxy = self.wrapper.study(study_title)
+                runs = []
+                for run in study_proxy.list_runs():
+                    data_files = []
+                    if run.raw_file_path:
+                        data_files.append({
+                            "sensor": run.sensor_alias,
+                            "file": run.raw_file_path,
+                            "type": "Raw Data File",
+                        })
+                    if run.processed_file_path:
+                        data_files.append({
+                            "sensor": run.sensor_alias,
+                            "file": run.processed_file_path,
+                            "type": "Processed Data File",
+                        })
+                    runs.append({
+                        "run_index": run.run_number,
+                        "run_id": run.run_id,
+                        "assay_id": run.assay_id,
+                        "sensor_alias": run.sensor_alias,
+                        "factor_values": run.factor_values,
+                        "measurement_parameters": run.measurement_params,
+                        "processing_parameters": run.processing_params,
+                        "data_files": data_files,
+                    })
+
+                expected_runs = int(
+                    self._comment_value(study.get("comments", []), "total_runs") or 0
+                )
+                continuity = {
+                    "n_runs": len(runs),
+                    "declared_total_runs": expected_runs,
+                    "match": expected_runs == len(runs) if expected_runs else None,
+                }
+                runs_capped, runs_total, runs_truncated = _cap_records(runs)
+                result = {
+                    "study": study_proxy.title,
+                    "runs": runs_capped,
+                    "continuity": continuity,
+                }
+                if runs_truncated:
+                    result["_truncated"] = True
+                    result["runs_total"] = runs_total
+                    result["runs_shown"] = len(runs_capped)
+                    result["note"] = (
+                        f"Showing the first {len(runs_capped)} of {runs_total} runs to stay "
+                        "within the model's token limit. Ask about a specific run or sensor "
+                        "to retrieve the rest."
+                    )
+                return result
+            except Exception:
+                # Preserve the legacy parser path for malformed/incomplete uploads.
+                pass
 
         factor_map = self._factor_index(study)
         samples = study.get("materials", {}).get("samples", [])

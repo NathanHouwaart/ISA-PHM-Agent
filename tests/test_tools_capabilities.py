@@ -95,6 +95,16 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertTrue(all(row["type"] == "Processed Data File" for row in files))
         self.assertTrue(all(row["file"].endswith(".csv") for row in files))
 
+    def test_run_inventory_uses_wrapper_study_run_summaries(self):
+        parser = load_from_file(str(FIXTURE))
+
+        inventory = parser.get_run_inventory("Mini Diagnostic Study")
+
+        self.assertEqual(inventory["continuity"]["n_runs"], 2)
+        self.assertEqual([run["run_id"] for run in inventory["runs"]], ["run_01", "run_02"])
+        self.assertTrue(all(run["sensor_alias"] == "mini-vibration" for run in inventory["runs"]))
+        self.assertTrue(all(len(run["data_files"]) == 1 for run in inventory["runs"]))
+
     def test_fixture_exposes_frequency_domain_capability(self):
         parser = load_from_file(str(FIXTURE))
         result = json.loads(execute_tool(
