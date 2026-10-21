@@ -469,6 +469,29 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
             },
         },
         {
+            "name": "get_analysis_capabilities",
+            "description": (
+                "Report which analyses are currently supported for one sensor or run, "
+                "using the Wrapper's metadata-aware capability API. Call this before "
+                "frequency-domain analysis when sampling metadata may be absent. "
+                "Missing metadata is reported as an unavailable capability, not as an "
+                "invalid dataset."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    **dataset_param,
+                    "study_title": {"type": "string"},
+                    "sensor_alias": {"type": "string"},
+                    "relative_path": {
+                        "type": "string",
+                        "description": "Optional CSV path; resolves one run when supplied.",
+                    },
+                },
+                "required": ["dataset_name", "study_title", "sensor_alias"],
+            },
+        },
+        {
             "name": "compare_datasets_metadata",
             "description": (
                 "Metadata-only side-by-side comparison of TWO datasets: "
@@ -898,6 +921,9 @@ def execute_tool(
                 tool_input["sensor_alias"],
             )
 
+        elif tool_name == "get_analysis_capabilities":
+            result = _analysis_capabilities_via_wrapper(parser, tool_input)
+
         elif tool_name == "load_run_csv":
             result = _load_run_csv_via_wrapper(parser, tool_input, dataset_name, working_copies)
 
@@ -1246,6 +1272,28 @@ def _resolve_assay_proxy(parser: ISAParser, study_title: str, sensor_alias: str)
         return assay_proxy, None
     except Exception as e:
         return None, {"error": f"Wrapper lookup failed: {type(e).__name__}: {e}"}
+
+
+def _analysis_capabilities_via_wrapper(parser: ISAParser, tool_input: dict) -> dict:
+    """Expose Wrapper capability information without loading measurement data."""
+    study_title = tool_input["study_title"]
+    sensor_alias = tool_input["sensor_alias"]
+    assay_proxy, err = _resolve_assay_proxy(parser, study_title, sensor_alias)
+    if err is not None:
+        return err
+    relative_path = tool_input.get("relative_path")
+    run_id = _resolve_run_id(parser, assay_proxy, study_title, sensor_alias, relative_path)
+    capabilities = (
+        assay_proxy.run(run_id).analysis_capabilities()
+        if relative_path is not None and run_id is not None
+        else assay_proxy.analysis_capabilities()
+    )
+    return {
+        "status": "ok",
+        "scope": "run" if relative_path is not None and run_id is not None else "assay",
+        "run_id": run_id if relative_path is not None else None,
+        "capabilities": _jsonify(capabilities),
+    }
 
 
 def _load_run_csv_via_wrapper(

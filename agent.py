@@ -200,7 +200,7 @@ Future capabilities:
 - Runs and sensors (E-series):              get_run_inventory, get_sensor_availability, list_data_files.
 - Raw data preview (F-series):              load_run_csv (requires data dir), get_assay_details.
 - Replication (J-series):                   get_protocol_details, get_replication_gaps.
-- Plotting (G-series):                      get_sensor_compatibility FIRST (for FFT/PSD/spectrogram), then make_plot. \
+- Plotting (G-series):                      get_sensor_compatibility AND get_analysis_capabilities FIRST (for FFT/PSD/spectrogram/waterfall), then make_plot. \
 make_plot kinds: per-run (timeseries, fft, psd, spectrogram, distribution, missing_values, outlier_comparison); \
 per-sensor over all runs (lifecycle, correlation, variability, waterfall); \
 study-wide over sensors (multi_lifecycle = the Multi-RMS comparison, sensor_boxplot, sensor_lifecycle_correlation); \
