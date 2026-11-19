@@ -297,6 +297,16 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
             },
         },
         {
+            "name": "validate_specification",
+            "description": (
+                "Run selected shared draft ISA-PHM Specification checks on the original loaded JSON. "
+                "Folder-loaded datasets with a connected root include layout and path checks; "
+                "uploads receive metadata checks only. This does not certify conformance or "
+                "check scientific correctness. Report errors, warnings and unchecked scope."
+            ),
+            "input_schema": {"type": "object", "properties": dataset_param, "required": ["dataset_name"]},
+        },
+        {
             "name": "validate_dataset",
             "description": (
                 "Run limited heuristic metadata checks, not the ISA-PHM specification "
@@ -924,6 +934,10 @@ def execute_tool(
             result = parser.get_ai_context(
                 include_semantics=tool_input.get("include_semantics", True),
             )
+
+        elif tool_name == "validate_specification":
+            from specification_validation import validate_specification
+            result = validate_specification(parser, base_dir)
 
         elif tool_name == "validate_dataset":
             merge_target_name = tool_input.get("merge_target_dataset")

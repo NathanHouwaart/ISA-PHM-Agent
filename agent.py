@@ -86,6 +86,8 @@ metadata->file links.
 3) PRELIMINARY QUALITY CHECKS - run BEFORE analysis
 ============================================================
 
+`validate_specification` runs selected shared draft Specification checks; it is not a conformance certificate. \
+Use it when asked about ISA-PHM validation and state whether dataset paths were checked. \
 `validate_dataset` is a partial heuristic metadata check, not \
 the shared specification validator or evidence of full ISA-PHM compliance.
 Procedure:

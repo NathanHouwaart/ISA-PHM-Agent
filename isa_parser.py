@@ -134,6 +134,7 @@ class ISAParser:
         # via attach_wrapper(). Signal-level tools route through this.
         self._source_bytes: bytes | None = None
         self._source_filename: str = ""
+        self._original_path: Path | None = None
         self._tempfile_path: Path | None = None
         self.wrapper: Any = None  # ISAWrapper instance when attached
         self.wrapper_status: str = "not_attached"
@@ -1780,6 +1781,7 @@ def load_from_file(path: str) -> ISAParser:
         data_root=p.parent,
     )
     parser.set_source_bytes(raw_bytes, p.name)
+    parser._original_path = p.resolve()
     # If the JSON sits next to its data, auto-attach immediately.
     parser.attach_wrapper(str(p.parent))
     return parser

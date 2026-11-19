@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from isa_parser import load_from_bytes, load_from_file, scan_project_folder
 from agent import run_agent, run_agent_stream
 import tools as tools_module
+from specification_validation import validate_specification
 
 load_dotenv()
 
@@ -130,6 +131,8 @@ if "attachment_registry" not in st.session_state:
     st.session_state.attachment_registry = {}
 if "validation_cache" not in st.session_state:
     st.session_state.validation_cache = {}
+if "specification_cache" not in st.session_state:
+    st.session_state.specification_cache = {}
 if "client" not in st.session_state:
     st.session_state.client = None
 if "chat_messages" not in st.session_state:
@@ -637,6 +640,7 @@ with st.sidebar:
             del st.session_state.datasets[name]
             st.session_state.data_dirs.pop(name, None)
             st.session_state.validation_cache.pop(name, None)
+            st.session_state.specification_cache.pop(name, None)
             _drop_working_copies(name)
             st.session_state.conversation_history = []
             st.session_state.chat_messages = []
@@ -661,6 +665,7 @@ with st.sidebar:
         )
         if new_dir != current_dir:
             st.session_state.data_dirs[name] = new_dir
+            st.session_state.specification_cache.pop(name, None)
             ok, msg = parser.attach_wrapper(new_dir if new_dir else None)
             if new_dir and not ok:
                 st.warning(f"Could not attach data directory: {msg}")
@@ -976,13 +981,56 @@ elif _active == "Quality Report":
         for name, parser in st.session_state.datasets.items():
             st.subheader(name)
 
+            st.markdown("**Shared Specification checks**")
+            if name not in st.session_state.specification_cache:
+                try:
+                    st.session_state.specification_cache[name] = validate_specification(
+                        parser, st.session_state.data_dirs.get(name)
+                    )
+                except Exception as exc:
+                    st.session_state.specification_cache[name] = {
+                        "status": "unavailable", "checks": {},
+                        "limitations": [f"The shared checks could not run: {type(exc).__name__}"],
+                    }
+            shared = st.session_state.specification_cache[name]
+            shared_status = shared.get("status", "unavailable")
+            shared_checks = shared.get("checks", {})
+            findings = [
+                (category, item.get("message", ""))
+                for check in shared_checks.values()
+                for category in ("errors", "incomplete", "advisories")
+                for item in check.get(category, [])
+            ]
+            if shared_status == "fail":
+                st.error("The selected Specification checks found errors.")
+            elif shared_status in ("incomplete", "unavailable"):
+                st.warning("Some Specification checks could not be completed.")
+            elif findings:
+                st.warning("Selected Specification checks passed with warnings.")
+            else:
+                st.success("Selected Specification checks passed.")
+            if shared.get("agent_scope"):
+                st.caption(shared["agent_scope"])
+            for category, message in findings[:30]:
+                {"errors": st.error, "incomplete": st.warning, "advisories": st.warning}[category](message)
+            if len(findings) > 30:
+                st.caption(f"Showing 30 of {len(findings)} findings; see the full report below.")
+            with st.expander("Specification validation details"):
+                st.caption("Selected draft checks only; not a complete ISA-PHM conformance or scientific assessment.")
+                st.json(shared)
+            if st.button("Recheck Specification", key=f"spec_recheck_{name}"):
+                st.session_state.specification_cache.pop(name, None)
+                st.rerun()
+
+            st.markdown("**Agent quality checks**")
+
             if name not in st.session_state.validation_cache:
                 _refresh_validation(name)
             validation = st.session_state.validation_cache.get(name, {})
 
             status = validation.get("status", "warn")
             st.markdown(
-                f"Overall status: &nbsp; {_status_pill(status)}",
+                f"Agent check status: &nbsp; {_status_pill(status)}",
                 unsafe_allow_html=True,
             )
 

@@ -42,7 +42,7 @@ The system has four layers. Every user query travels through all of them.
 |  Agent Layer  —  Claude API with tool use (agent.py)         |
 |  System prompt (≈160 lines), tool-calling loop, trace logger |
 +--------------------------------------------------------------+
-|  Tool Layer  —  21 tools (tools.py)                          |
+|  Tool Layer  —  research tools (tools.py)                    |
 |  Metadata tools route through ISAParser                      |
 |  Signal tools route through ISAWrapper / AssayProxy / Plotter|
 +--------------------------------------------------------------+
@@ -92,9 +92,10 @@ The Wrapper submodule in turn pins the shared ISA-PHM Specification submodule
 and installs its validator at the same revision. When updating an existing
 checkout, run `git submodule update --init --recursive` before installing the
 requirements. Git and network access are needed for the initial install.
-The Agent's existing quality report uses its own checks; the shared draft
-Specification report is currently exposed by the Wrapper's Python API and is
-not yet presented in the Agent's chat or quality-report tab.
+The quality-report tab shows the shared draft Specification checks separately
+from the Agent's heuristic checks. The Agent can also call
+`validate_specification` in chat. Loading a dataset from its folder permits
+layout and path checks; uploading JSON alone checks metadata only.
 
 In the Streamlit UI:
 
@@ -199,15 +200,14 @@ assessment. It does not verify the full ISA schema, every referenced file, the
 entire ISA-PHM specification, or scientific correctness. File loading checks
 only the particular file being loaded.
 
-The shared ISA-PHM Specification validator is still experimental and is not
-yet integrated into the Agent or Wrapper. The Agent should report errors,
-warnings, assumptions and unchecked areas rather than claiming all gates pass.
+The shared ISA-PHM Specification validator is experimental. The Agent reports
+its selected checks and unchecked areas without claiming full conformance.
 
 ---
 
 ## Tool catalogue
 
-The agent has 21 tools, defined in `tools.py`. The tools are presented to
+The agent's tools are defined in `tools.py`. They are presented to
 the model as a flat list with short, unambiguous descriptions.
 
 | Category | Tool | Purpose |
@@ -219,7 +219,8 @@ the model as a flat list with short, unambiguous descriptions.
 | Metadata | `get_assay_details` | Full assay record. |
 | Metadata | `list_data_files` | CSV inventory for an assay. |
 | Search | `search_metadata` | Free-text search across the parsed structure. |
-| Quality | `validate_dataset` | Run the five-gate quality check. |
+| Quality | `validate_dataset` | Run the Agent's partial heuristic checks. |
+| Quality | `validate_specification` | Run selected shared draft Specification checks. |
 | Run/sensor | `get_experiment_matrix` | Study factors × studies as a table. |
 | Run/sensor | `get_run_inventory` | Inventory of runs per study and assay. |
 | Run/sensor | `get_label_coverage` | Coverage of factor labels across runs. |
@@ -305,9 +306,8 @@ The UI is implemented in `app.py`. Structure:
   - **Chat** — the primary surface. Renders the conversation, the
     agent-trace expander under each assistant message, and the Bokeh
     figure registry.
-  - **Quality Report** — pre-formatted view of the validation result for
-    each loaded dataset (equivalent to calling `validate_dataset` once
-    per dataset).
+  - **Quality Report** — shared Specification checks and the separate Agent
+    heuristic validation for each loaded dataset.
   - **Compare Datasets** — side-by-side metadata comparison for two or
     more loaded datasets (calls `compare_datasets_metadata`).
 
