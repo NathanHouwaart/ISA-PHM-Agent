@@ -302,7 +302,8 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                 "Run selected shared draft ISA-PHM Specification checks on the original loaded JSON. "
                 "Folder-loaded datasets with a connected root include layout and path checks; "
                 "uploads receive metadata checks only. This does not certify conformance or "
-                "check scientific correctness. Report errors, warnings and unchecked scope."
+                "check scientific correctness. Use the returned check_scope to describe precisely "
+                "what each check covers. Report errors, warnings and unchecked scope."
             ),
             "input_schema": {"type": "object", "properties": dataset_param, "required": ["dataset_name"]},
         },

@@ -17,6 +17,7 @@ def test_upload_checks_original_metadata_without_claiming_file_checks(tmp_path):
     assert 'layout' in report['not_selected']
     assert 'paths were not checked' in report['agent_scope']
     assert report['conformant'] is None
+    assert 'not count rows' in report['check_scope']['phm_sensor_csv']
 
 
 def test_folder_source_checks_layout_and_detects_changed_json(tmp_path):

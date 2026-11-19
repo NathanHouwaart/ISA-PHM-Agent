@@ -4,6 +4,16 @@ import tempfile
 from pathlib import Path
 
 METADATA_CHECKS = ("isa_schema", "phm_protocols", "phm_metadata", "phm_experiment_type", "phm_sensors")
+CHECK_SCOPE = {
+    "layout": "Checks dataset layout and selected assay, source and characteristic paths. It does not check all references: factor paths and other unrecognized references are not checked; file contents are not checked.",
+    "isa_schema": "Checks the pinned ISA core JSON Schema only, not all ISA rules.",
+    "phm_protocols": "Checks selected protocol and data-file relationships in the current Backend mapping, not whether processing is scientifically valid or fully described.",
+    "phm_metadata": "Checks explicit sampling-rate and measured-unit answers, not all PHM metadata or scientific validity.",
+    "phm_experiment_type": "Checks the current experiment-type mapping, not whether the experiment actually degrades.",
+    "phm_sensors": "Checks selected sensor answers are present, not that definitions are complete or scientifically valid.",
+    "isa_tools": "Optional experimental ISA-tools content and graph checks for supported configurations only; not full ISA or ISA-PHM validation.",
+    "phm_sensor_csv": "Optional CSV check that readable nonempty rows have two columns; it does not count rows or validate NaNs, numeric types, timestamps, value ranges or semantic column names.",
+}
 
 
 def validate_specification(parser, data_root=None):
@@ -37,4 +47,5 @@ def validate_specification(parser, data_root=None):
         )
         if original and not same_source:
             report["agent_scope"] += " The original JSON has changed or is unavailable; metadata was checked against the loaded copy."
+    report["check_scope"] = CHECK_SCOPE
     return report
