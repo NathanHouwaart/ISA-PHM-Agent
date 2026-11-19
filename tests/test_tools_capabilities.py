@@ -7,14 +7,168 @@ import unittest
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from isa_parser import load_from_file
-from tools import _frequency_capability, execute_tool
+from tools import FIGURE_REGISTRY, _compare_lifecycle_plot, _frequency_capability, _serialize_wrapper_result, _wrapper_api_reference, execute_tool
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "diagnostic-signal-mini" / "i_investigation.json"
+
+
+class SignalSourceTests(unittest.TestCase):
+    def _assay(self):
+        import pandas as pd
+
+        class Assay:
+            def __init__(self):
+                self.requested = []
+
+            def list_runs(self):
+                return [SimpleNamespace(run_id="run_01")]
+
+            def run(self, run_id):
+                return SimpleNamespace(analysis_capabilities=lambda: SimpleNamespace(measured_unit={"value": "G", "available": True}))
+
+            def load_dataframe_with_meta(self, run_id, file_type):
+                self.requested.append(file_type)
+                resolved = "processed" if file_type == "auto" else file_type
+                return pd.DataFrame({"time": [0, 1, 2, 3], "value": [1., 2., 3., 4.]}), {"resolved_file_type": resolved, "file_path": f"{resolved}.csv"}
+
+            def load_dataframe(self, run_id, file_type):
+                self.requested.append(file_type)
+                return pd.DataFrame({"time": [0, 1, 2, 3], "value": [1., 2., 3., 4.]})
+
+            def fix_outliers(self, df, **kwargs):
+                return df
+
+        return Assay()
+
+    def test_load_reports_actual_processed_source(self):
+        assay = self._assay()
+        with patch("tools._resolve_assay_proxy", return_value=(assay, None)):
+            result = json.loads(execute_tool("load_run_csv", {"dataset_name": "d", "study_title": "s", "sensor_alias": "a"}, {"d": SimpleNamespace(wrapper=object())}))
+        self.assertEqual(result["source"], "processed_file")
+        self.assertEqual(result["load_meta"]["resolved_file_type"], "processed")
+        self.assertEqual(result["recorded_measurement_unit"]["value"], "G")
+
+    def test_cleaning_really_starts_from_raw(self):
+        assay = self._assay()
+        with patch("tools._resolve_assay_proxy", return_value=(assay, None)):
+            result = json.loads(execute_tool("process_signal", {"dataset_name": "d", "study_title": "s", "sensor_alias": "a", "fix_outliers": {}}, {"d": SimpleNamespace(wrapper=object())}))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(assay.requested, ["raw"])
+
+    def test_explicit_raw_bypasses_existing_working_copy(self):
+        import pandas as pd
+        assay = self._assay()
+        cached = {("d", "s", "a", "run_01"): {"df": pd.DataFrame({"time": [0], "value": [99.]}), "transforms": []}}
+        with patch("tools._resolve_assay_proxy", return_value=(assay, None)):
+            result = json.loads(execute_tool("load_run_csv", {"dataset_name": "d", "study_title": "s", "sensor_alias": "a", "file_type": "raw"}, {"d": SimpleNamespace(wrapper=object())}, working_copies=cached))
+        self.assertEqual(result["source"], "raw_file")
+        self.assertEqual(assay.requested, ["raw"])
+
+
+class ValidationCoverageTests(unittest.TestCase):
+    def test_validation_describes_its_partial_coverage(self):
+        parser = load_from_file(str(FIXTURE))
+        result = parser.validate_dataset()
+        self.assertEqual(result["coverage"]["status"], "partial")
+        self.assertIn("complete ISA-PHM specification", result["coverage"]["not_checked"])
+        self.assertNotEqual(result["gate_summary"]["1_structural"], "pass")
+        self.assertNotEqual(result["status"], "pass")
+
+
+class CrossStudyLifecyclePlotTests(unittest.TestCase):
+    @staticmethod
+    def _parser(missing=False, mismatch=False, failure=False):
+        import pandas as pd
+        class Assay:
+            def __init__(self, unit, bad): self.unit, self.bad = unit, bad
+            def analysis_capabilities(self):
+                return SimpleNamespace(measured_unit=SimpleNamespace(available=True, value=self.unit))
+            def lifecycle_features(self, file_type):
+                return pd.DataFrame([{"run_id": "run_01", "run_number": 1, "rms": 1.0, "resolved_file_type": "raw", "error": None}, {"run_id": "run_02", "run_number": 2, "rms": float('nan') if self.bad else 2.0, "resolved_file_type": "raw", "error": "missing file" if self.bad else None}])
+        class Study:
+            def __init__(self, study): self.study = study
+            def list_assays(self):
+                names = ["axial"] if missing and self.study == "B" else ["axial", "radial"]
+                return [SimpleNamespace(sensor_alias=n, assay_id=n, quantity_kind_identifier="acceleration") for n in names]
+            def assay(self, alias): return Assay("m/s2" if mismatch and self.study == "B" else "G", failure and alias == "axial" and self.study == "B")
+        return SimpleNamespace(wrapper=SimpleNamespace(study=lambda title: Study(title)))
+
+    def test_four_curves_one_plot(self):
+        result = _compare_lifecycle_plot(self._parser(), {"study_titles": ["A", "B"], "sensor_aliases": ["axial", "radial"]}, "dataset")
+        self.assertEqual(len(result["curves"]), 4)
+        self.assertEqual(result["missing"], [])
+        plot = FIGURE_REGISTRY[result["plot_id"]]["figure"]
+        self.assertEqual(len(plot.legend[0].items), 4)
+        self.assertIn("G", plot.yaxis[0].axis_label)
+
+    def test_missing_sensor_and_failed_run_are_reported(self):
+        result = _compare_lifecycle_plot(self._parser(missing=True, failure=True), {"study_titles": ["A", "B"], "sensor_aliases": ["axial", "radial"]}, "dataset")
+        self.assertEqual(len(result["curves"]), 3)
+        self.assertTrue(any(item.get("run_id") == "run_02" and "missing file" in item["reason"] for item in result["missing"]))
+        self.assertTrue(any(item["sensor"] == "radial" and item["study"] == "B" for item in result["missing"]))
+
+    def test_mismatched_units_are_not_plotted(self):
+        result = _compare_lifecycle_plot(self._parser(mismatch=True), {"study_titles": ["A", "B"]}, "dataset")
+        self.assertIn("different measured units", result["error"])
+        self.assertNotIn("plot_id", result)
+
+
+class FeatureTableIntegrationTests(unittest.TestCase):
+    def test_agent_dispatches_feature_table_and_keeps_exclusion_report(self):
+        parser = load_from_file(str(FIXTURE))
+        result = json.loads(execute_tool(
+            "call_wrapper_function",
+            {"dataset_name": "mini", "target": "assay", "study_title": "Mini Diagnostic Study", "sensor_alias": "mini-vibration", "method": "feature_table", "arguments": {"features": ["rms"], "file_type": "auto", "on_incomplete": "drop"}},
+            {"mini": parser},
+        ))
+        self.assertEqual(result["result_type"], "feature_table_with_exclusions")
+        self.assertEqual(result["table"]["n_rows"], 2)
+        self.assertEqual(result["exclusions"]["n_rows"], 0)
+
+    def test_wrapper_api_exposes_feature_table_not_removed_method(self):
+        result = _wrapper_api_reference(class_name="AssayProxy")
+        names = {item["name"] for item in result["classes"]["AssayProxy"]}
+        self.assertIn("feature_table", names)
+        self.assertNotIn("to_ml_dataset", names)
+
+    def test_feature_table_exclusions_are_reported_separately(self):
+        import pandas as pd
+        table = pd.DataFrame([{"run_id": "r1", "rms": 1.0}])
+        report = pd.DataFrame([{"run_id": "r2", "reasons": ["file missing"]}])
+        result = _serialize_wrapper_result((table, report), "test", "assay", "feature_table")
+        self.assertEqual(result["result_type"], "feature_table_with_exclusions")
+        self.assertEqual(result["table"]["n_rows"], 1)
+        self.assertEqual(result["exclusions"]["preview_rows"][0]["run_id"], "r2")
+
+
+class AttachmentToolTests(unittest.TestCase):
+    def test_tool_registers_local_preview_without_sending_contents(self):
+        from isa_phm.attachments import Attachment
+        image = Attachment("image", "Study A", "source", "Testbed", "Images/setup.png", Path("Images/setup.png"), "available")
+        missing = Attachment("datasheet", "Study A", "sensor", "Accel", "Datasheets/missing.pdf", Path("Datasheets/missing.pdf"), "missing")
+        wrapper = SimpleNamespace(attachments=lambda **kwargs: [image, missing])
+        registry = {}
+        result = json.loads(execute_tool("show_dataset_attachments", {"dataset_name": "mini", "study_title": "Study A"}, {"mini": SimpleNamespace(wrapper=wrapper)}, attachment_registry=registry))
+        self.assertEqual(result["unique_previews"], 1)
+        self.assertEqual(len(registry), 1)
+        self.assertEqual(result["attachments"][1]["status"], "missing")
+        self.assertIn("not been read", result["note"])
+        self.assertNotIn("data:", json.dumps(result))
+
+    def test_duplicate_references_share_one_preview(self):
+        from isa_phm.attachments import Attachment
+        one = Attachment("datasheet", "A", "sensor", "X", "Datasheets/s.pdf", Path("Datasheets/s.pdf"), "available")
+        two = Attachment("datasheet", "A", "sensor", "Y", "Datasheets/s.pdf", Path("Datasheets/s.pdf"), "available")
+        registry = {}
+        result = json.loads(execute_tool("show_dataset_attachments", {"dataset_name": "mini"}, {"mini": SimpleNamespace(wrapper=SimpleNamespace(attachments=lambda **kwargs: [one, two]))}, attachment_registry=registry))
+        self.assertEqual(len(registry), 1)
+        self.assertEqual(result["attachments"][0]["attachment_id"], result["attachments"][1]["attachment_id"])
 
 
 class _Run:

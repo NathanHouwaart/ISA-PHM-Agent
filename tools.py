@@ -299,12 +299,11 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
         {
             "name": "validate_dataset",
             "description": (
-                "Run the 5 PHM quality gates from the playbook: 1) structural, "
-                "2) file linkage (only if check_files=True + data base dir), "
-                "3) PHM semantic (fault/operating-condition presence), "
-                "4) PHM ambition (run-count vs inferred objective), "
-                "5) merge readiness (only if check_merge=True + merge_target_dataset). "
-                "Returns errors/warnings/info + gate_summary + PHM objective. "
+                "Run limited heuristic metadata checks, not the ISA-PHM specification "
+                "validator. These do not check all referenced file content, full ISA "
+                "schema, scientific correctness or all quality gates. Optional "
+                "merge readiness requires check_merge and a second dataset. "
+                "Returns errors, warnings, check coverage and PHM objective. "
                 "Call this BEFORE analysis in every non-trivial workflow."
             ),
             "input_schema": {
@@ -388,6 +387,26 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
             "input_schema": {
                 "type": "object",
                 "properties": dataset_param,
+                "required": ["dataset_name"],
+            },
+        },
+        {
+            "name": "show_dataset_attachments",
+            "description": (
+                "Find and show local test-setup images and sensor, device or component "
+                "datasheets referenced by the dataset. Use when the user asks to see "
+                "images or datasheets, or when images would help explain a test setup. "
+                "Returns metadata only: the model cannot see or read file contents. "
+                "The local app displays supported images and provides PDF previews/downloads."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    **dataset_param,
+                    "study_title": {"type": "string", "description": "Study to inspect; omit only for all studies."},
+                    "kind": {"type": "string", "enum": ["image", "datasheet"], "description": "Optional attachment type; omit for both."},
+                    "owner_contains": {"type": "string", "description": "Optional case-insensitive sensor, device or component name filter."},
+                },
                 "required": ["dataset_name"],
             },
         },
@@ -551,8 +570,9 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                 "Load the head and summary stats of one run's CSV via the "
                 "wrapper. Requires the data directory to be configured in the "
                 "sidebar. Returns n_rows, columns, dtypes, head, "
-                "min/max/mean/std/rms stats, plus 'source' (raw_file or "
-                "working_copy) and any 'transforms' already applied. Identify the "
+                "min/max/mean/std/rms stats, plus the actual file source and "
+                "any 'transforms' already applied. Set file_type to raw or processed "
+                "for an explicit file; auto prefers processed when present. Identify the "
                 "run by EITHER study_title + sensor_alias (defaults to the last "
                 "run; pass relative_path to pick a specific one) OR relative_path "
                 "alone. If a process_signal working copy exists for the resolved "
@@ -573,6 +593,7 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                         ),
                     },
                     "max_rows": {"type": "integer", "default": 5},
+                    "file_type": {"type": "string", "enum": ["raw", "processed", "auto"], "default": "auto", "description": "Explicit raw/processed bypasses the session working copy; auto uses it if present."},
                 },
                 "required": ["dataset_name", "study_title", "sensor_alias"],
             },
@@ -680,6 +701,27 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
             },
         },
         {
+            "name": "compare_lifecycle_plot",
+            "description": (
+                "Plot one lifecycle feature, such as RMS, for sensor outputs across multiple "
+                "studies on ONE graph. Use for cross-study comparisons, including follow-ups "
+                "to a prior sensor/RMS plot. Each line is labelled study and sensor; "
+                "returns any missing sensors, failed measurements and metadata warnings. "
+                "The x-axis is measurement number, not synchronized time."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    **dataset_param,
+                    "study_titles": {"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "Studies to compare within the selected dataset."},
+                    "sensor_aliases": {"type": "array", "items": {"type": "string"}, "description": "Requested sensor aliases in each study. Omit to include every available sensor output."},
+                    "feature": {"type": "string", "default": "rms", "description": "Explicit lifecycle feature, e.g. rms or peak2peak."},
+                    "file_type": {"type": "string", "enum": ["raw", "processed", "auto"], "default": "auto", "description": "Auto prefers processed if recorded, otherwise raw."},
+                },
+                "required": ["dataset_name", "study_titles"],
+            },
+        },
+        {
             "name": "make_plot",
             "description": (
                 "Render a Bokeh plot via the ISA-PHM wrapper. Requires the "
@@ -783,7 +825,7 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                         "type": "string",
                         "description": (
                             "Exact public method name from get_wrapper_api, e.g. "
-                            "sensor_catalog, operating_conditions, to_ml_dataset."
+                            "sensor_catalog, operating_conditions, feature_table."
                         ),
                     },
                     "arguments": {
@@ -822,6 +864,7 @@ def execute_tool(
     parsers: dict[str, ISAParser],
     data_dirs: dict[str, str] | None = None,
     working_copies: dict | None = None,
+    attachment_registry: dict | None = None,
 ) -> str:
     """Dispatch a Claude tool_use call. Always returns JSON.
     data_dirs maps dataset_name → base_dir for signal tools.
@@ -906,6 +949,9 @@ def execute_tool(
         elif tool_name == "classify_phm_objective":
             result = parser.classify_phm_objective()
 
+        elif tool_name == "show_dataset_attachments":
+            result = _show_dataset_attachments(parser, tool_input, dataset_name, attachment_registry)
+
         elif tool_name == "compare_studies":
             result = parser.compare_studies(tool_input["study_titles"])
 
@@ -935,6 +981,9 @@ def execute_tool(
                 parser, tool_input["study_title"], tool_input["sensor_alias"]
             )
 
+        elif tool_name == "compare_lifecycle_plot":
+            result = _compare_lifecycle_plot(parser, tool_input, dataset_name)
+
         elif tool_name == "make_plot":
             result = _make_plot_via_wrapper(parser, tool_input, dataset_name, working_copies)
 
@@ -953,6 +1002,46 @@ def execute_tool(
 # ---------------------------------------------------------------------------
 # Compound handlers
 # ---------------------------------------------------------------------------
+
+def _show_dataset_attachments(parser: ISAParser, tool_input: dict, dataset_name: str, registry: dict | None) -> dict:
+    """Register local previews in the current session; return metadata, never file bytes."""
+    if parser.wrapper is None:
+        return _wrapper_unavailable(parser)
+    study = tool_input.get("study_title")
+    kind = tool_input.get("kind")
+    owner_filter = str(tool_input.get("owner_contains") or "").strip().casefold()
+    try:
+        attachments = parser.wrapper.attachments(study=study, kind=kind)
+    except Exception as exc:
+        return {"error": f"Could not list dataset attachments: {type(exc).__name__}: {exc}"}
+    if owner_filter:
+        attachments = [item for item in attachments if owner_filter in item.owner.casefold()]
+    records = []
+    registered = {}
+    preview_limit = 8
+    for item in attachments:
+        record = {"study": item.study, "kind": item.kind, "owner_type": item.owner_type, "owner": item.owner, "reference": item.reference, "status": item.status}
+        suffix = item.path.suffix.lower() if item.path else ""
+        supported = (item.kind == "image" and suffix in {".jpg", ".jpeg", ".png", ".gif"}) or (item.kind == "datasheet" and suffix == ".pdf")
+        key = (item.kind, str(item.path))
+        if item.status == "available" and supported and registry is not None:
+            if key in registered:
+                record["attachment_id"] = registered[key]
+            elif len(registered) < preview_limit:
+                attachment_id = f"attachment_{uuid.uuid4().hex}"
+                registry[attachment_id] = {"attachment": item, "dataset_name": dataset_name}
+                registered[key] = attachment_id
+                record["attachment_id"] = attachment_id
+            else:
+                record["preview_note"] = "Preview limit reached; narrow the request to see this file."
+        elif item.status == "available" and not supported:
+            record["preview_note"] = "File type is not supported for inline preview."
+        records.append(record)
+    return {
+        "status": "ok", "attachments": records, "unique_previews": len(registered),
+        "note": "Only attachment metadata was provided to the model; file contents have not been read or interpreted by the model. Missing or unsafe references are not opened.",
+    }
+
 
 def _compare_datasets_metadata(pa: ISAParser, pb: ISAParser, name_a: str, name_b: str) -> dict:
     ca = pa.get_ai_context(include_semantics=True)
@@ -1104,6 +1193,14 @@ def _serialize_wrapper_result(value, dataset_name: str, target: str, method: str
     dumped whole); everything else is JSON-ified with a size cap."""
     import pandas as pd
 
+    if method == "feature_table" and isinstance(value, tuple) and len(value) == 2 and all(isinstance(item, pd.DataFrame) for item in value):
+        table, report = value
+        return {
+            "result_type": "feature_table_with_exclusions",
+            "table": _serialize_wrapper_result(table, dataset_name, target, method),
+            "exclusions": _serialize_wrapper_result(report, dataset_name, target, method),
+        }
+
     module = getattr(type(value), "__module__", "") or ""
     if "bokeh" in module:  # a Bokeh figure — render it like make_plot does
         title = " · ".join(p for p in [dataset_name, target, method] if p)
@@ -1177,7 +1274,6 @@ def _call_wrapper_function(parser: ISAParser, tool_input: dict, dataset_name: st
     study_title = tool_input.get("study_title")
     sensor_alias = tool_input.get("sensor_alias")
     relative_path = tool_input.get("relative_path")
-
     # Resolve the target object.
     if target == "wrapper":
         obj = parser.wrapper
@@ -1303,6 +1399,9 @@ def _load_run_csv_via_wrapper(
         return _wrapper_unavailable(parser)
 
     relative_path = tool_input.get("relative_path")
+    file_type = tool_input.get("file_type", "auto")
+    if file_type not in ("raw", "processed", "auto"):
+        return {"error": "file_type must be raw, processed, or auto."}
     max_rows = tool_input.get("max_rows", 5)
     study_title = tool_input.get("study_title")
     sensor_alias = tool_input.get("sensor_alias")
@@ -1319,7 +1418,7 @@ def _load_run_csv_via_wrapper(
         # Resolve consistently with process_signal/make_plot: prefer the run
         # matching relative_path, else default to the last run.
         run_id = _resolve_run_id(parser, assay_proxy, study_title, sensor_alias, relative_path)
-        wc = working_copies.get(_wc_key(dataset_name, study_title, sensor_alias, run_id))
+        wc = working_copies.get(_wc_key(dataset_name, study_title, sensor_alias, run_id)) if file_type == "auto" else None
         if wc is not None:
             # Serve the cached cleaned data instead of re-reading the raw file.
             df = wc["df"]
@@ -1328,7 +1427,7 @@ def _load_run_csv_via_wrapper(
             from_working_copy = True
         else:
             try:
-                df, meta = assay_proxy.load_dataframe_with_meta(run_id=run_id, file_type="auto")
+                df, meta = assay_proxy.load_dataframe_with_meta(run_id=run_id, file_type=file_type)
             except Exception as e:
                 return {"status": "read_error", "message": f"{type(e).__name__}: {e}"}
     elif not relative_path:
@@ -1356,7 +1455,7 @@ def _load_run_csv_via_wrapper(
         s_title, a_id, run_id = match
         try:
             assay_proxy = parser.wrapper.study(s_title).assay(a_id)
-            df, meta = assay_proxy.load_dataframe_with_meta(run_id=run_id, file_type="auto")
+            df, meta = assay_proxy.load_dataframe_with_meta(run_id=run_id, file_type=file_type)
         except Exception as e:
             return {"status": "read_error", "message": f"{type(e).__name__}: {e}"}
 
@@ -1391,18 +1490,26 @@ def _load_run_csv_via_wrapper(
                 "rms": float(np.sqrt(np.mean(values ** 2))),
             }
 
+    serialized_meta = _jsonify(meta)
+    resolved = serialized_meta.get("resolved_file_type") if isinstance(serialized_meta, dict) else None
+    try:
+        recorded_unit = _jsonify(assay_proxy.run(run_id).analysis_capabilities().measured_unit)
+    except Exception:
+        recorded_unit = None
     return {
         "status": "ok",
         "run_id": run_id,
         "relative_path": relative_path,
-        "source": "working_copy" if from_working_copy else "raw_file",
+        "source": "working_copy" if from_working_copy else f"{resolved}_file" if resolved in ("raw", "processed") else "file_unknown",
         "transforms": _jsonify(transforms),
         "n_rows": int(len(df)),
         "columns": [str(c) for c in df.columns],
         "dtypes": {str(c): str(df[c].dtype) for c in df.columns},
         "head": _jsonify(head),
         "stats": stats,
-        "load_meta": _jsonify(meta),
+        "load_meta": serialized_meta,
+        "recorded_measurement_unit": recorded_unit,
+        "unit_note": "Measurement-protocol unit as recorded; verify whether processing changes it.",
     }
 
 
@@ -1458,7 +1565,7 @@ def _process_signal_via_wrapper(
         started_from = "working_copy"
     else:
         try:
-            df = assay_proxy.load_dataframe(run_id=run_id, file_type="auto")
+            df = assay_proxy.load_dataframe(run_id=run_id, file_type="raw")
         except Exception as e:
             return {"status": "read_error", "message": f"{type(e).__name__}: {e}"}
         transforms = []
@@ -1608,6 +1715,105 @@ def _resolve_study_proxy(parser: ISAParser, study_title: str):
         return parser.wrapper.study(study_title), None
     except Exception as e:
         return None, {"error": f"Could not open study '{study_title}': {type(e).__name__}: {e}"}
+
+
+def _compare_lifecycle_plot(parser: ISAParser, tool_input: dict, dataset_name: str) -> dict:
+    """Overlay explicitly labelled study/sensor feature curves and report gaps."""
+    import numpy as np
+    import pandas as pd
+    from isa_phm.plotter import ISAPlotter
+    from isa_phm.utils import FEATURE_NAMES
+
+    if parser.wrapper is None:
+        return _wrapper_unavailable(parser)
+    titles = tool_input.get("study_titles")
+    if not isinstance(titles, list) or len(titles) < 2 or any(not isinstance(x, str) or not x.strip() for x in titles):
+        return {"error": "Provide at least two study titles to compare."}
+    if len(set(titles)) != len(titles):
+        return {"error": "Study titles must be unique."}
+    aliases = tool_input.get("sensor_aliases")
+    if aliases is not None and (not isinstance(aliases, list) or not aliases or any(not isinstance(x, str) or not x.strip() for x in aliases) or len(set(aliases)) != len(aliases)):
+        return {"error": "sensor_aliases must be a non-empty list of unique sensor names, or omitted."}
+    feature = tool_input.get("feature", "rms")
+    if feature not in FEATURE_NAMES:
+        return {"error": f"Unknown feature {feature!r}. Available: {', '.join(FEATURE_NAMES)}."}
+    file_type = tool_input.get("file_type", "auto")
+    if file_type not in ("raw", "processed", "auto"):
+        return {"error": "file_type must be raw, processed, or auto."}
+
+    studies = []
+    for title in titles:
+        study, error = _resolve_study_proxy(parser, title)
+        if error:
+            return error
+        try:
+            summaries = study.list_assays()
+        except Exception as exc:
+            return {"error": f"Could not list sensors for {title}: {type(exc).__name__}: {exc}"}
+        by_alias = {}
+        for summary in summaries:
+            alias = summary.sensor_alias or summary.assay_id
+            if alias in by_alias:
+                return {"error": f"Study {title!r} has duplicate sensor alias {alias!r}; select unambiguous sensors before comparing."}
+            by_alias[alias] = summary
+        studies.append((title, study, by_alias))
+    if aliases is None:
+        aliases = list(dict.fromkeys(alias for _, _, sensors in studies for alias in sensors))
+
+    curves, missing, warnings, units, quantities, sources = {}, [], [], set(), set(), set()
+    for title, study, sensors in studies:
+        for alias in aliases:
+            label = f"{title} — {alias}"
+            summary = sensors.get(alias)
+            if summary is None:
+                missing.append({"study": title, "sensor": alias, "reason": "Sensor not found in study."})
+                continue
+            try:
+                assay = study.assay(summary.assay_id)
+                capability = assay.analysis_capabilities()
+                unit = capability.measured_unit
+                quantity = getattr(summary, "quantity_kind_identifier", None)
+                if quantity:
+                    quantities.add(quantity)
+                else:
+                    warnings.append(f"{label}: measured quantity identifier unavailable; comparability was not verified.")
+                if unit.available and unit.value:
+                    units.add(str(unit.value))
+                else:
+                    warnings.append(f"{label}: measured unit unavailable or inconsistent; comparability was not verified.")
+                frame = assay.lifecycle_features(file_type=file_type)
+                if frame.empty or feature not in frame.columns:
+                    missing.append({"study": title, "sensor": alias, "reason": "No feature results available."})
+                    continue
+                finite = np.isfinite(pd.to_numeric(frame[feature], errors="coerce"))
+                failed = frame.loc[~finite]
+                if not failed.empty:
+                    for _, row in failed.iterrows():
+                        missing.append({"study": title, "sensor": alias, "run_id": str(row.get("run_id", "?")), "reason": str(row.get("error") or f"{feature} unavailable")})
+                if not finite.any():
+                    continue
+                sources.update(str(x) for x in frame.loc[finite, "resolved_file_type"].dropna().unique())
+                curves[label] = frame
+            except Exception as exc:
+                missing.append({"study": title, "sensor": alias, "reason": f"{type(exc).__name__}: {exc}"})
+    if not curves:
+        return {"error": f"No {feature} curves could be calculated.", "missing": missing, "warnings": warnings}
+    if len(quantities) > 1:
+        return {"error": "Selected sensor outputs have different measured quantities; they cannot be meaningfully overlaid on one axis.", "quantities": sorted(quantities), "missing": missing}
+    if len(units) > 1:
+        return {"error": "Selected sensor outputs have different measured units; no unit conversion is performed.", "units": sorted(units), "missing": missing}
+    if len(sources) > 1:
+        warnings.append("The graph mixes raw and processed files. Review processing before comparing these curves.")
+    unit_label = next(iter(units)) if len(units) == 1 else None
+    if warnings and any("unit unavailable" in item for item in warnings):
+        unit_label = None
+    ylabel = f"{feature.upper()} ({unit_label})" if unit_label and feature in {"rms", "max", "mean", "peak2peak", "std"} else feature.upper()
+    try:
+        fig = ISAPlotter().plot_multi_lifecycle(curves, feature=feature, title=f"Cross-study {feature.upper()} comparison", xlabel="Measurement number", ylabel=ylabel)
+    except Exception as exc:
+        return {"error": f"Could not create comparison: {type(exc).__name__}: {exc}", "missing": missing, "warnings": warnings}
+    plot_id = _register_figure(fig, kind="compare_lifecycle_plot", title=f"{dataset_name} · Cross-study {feature.upper()}")
+    return {"plot_id": plot_id, "plot_kind": "compare_lifecycle_plot", "feature": feature, "curves": list(curves), "missing": missing, "warnings": warnings, "file_types": sorted(sources), "x_axis": "Measurement number (not synchronized time)", "message": "Cross-study comparison registered. The app will render one plot."}
 
 
 def _build_multi_lifecycle(study_proxy, feature: str):

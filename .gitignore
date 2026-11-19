@@ -2,11 +2,16 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv-*/
 venv/
 .env
 .DS_Store
 .streamlit/secrets.toml
 *.egg-info/
+
+# Local analysis plots, not application assets
+/bearing_*_waveform.html
+/bearing_*_rms_lifecycle.html
 
 # Data files (datasets are stored locally, not in the repo)
 *.json

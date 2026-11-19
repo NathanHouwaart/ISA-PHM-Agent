@@ -83,22 +83,31 @@ operating conditions, defined failure criterion or RUL labelling strategy, trace
 metadata->file links.
 
 ============================================================
-3) THE 5 QUALITY GATES - run BEFORE any analysis
+3) PRELIMINARY QUALITY CHECKS - run BEFORE analysis
 ============================================================
 
-| Gate | What it checks                                                | Blocking?                       |
-|------|---------------------------------------------------------------|---------------------------------|
-| 1    | Structural: hierarchy valid, required fields, no broken refs  | YES                             |
-| 2    | File linkage: linked CSVs exist and are readable              | YES (only if data dir is set)   |
-| 3    | PHM semantics: fault, operating-condition, units detectable   | WARN                            |
-| 4    | Prognostic readiness: run ordering + trajectory + RUL labels  | Only for prognosis prompts      |
-| 5    | Merge readiness: factor crosswalk, sensor + unit alignment    | Only for fusion prompts         |
-
+`validate_dataset` is a partial heuristic metadata check, not \
+the shared specification validator or evidence of full ISA-PHM compliance.
 Procedure:
-- ALWAYS call `validate_dataset` first.
-- If gate 1 or 2 fails -> STOP. Return a concrete fix plan. Do not produce plots/features.
-- If gate 3 warns -> continue with explicit caveat in the response.
-- Gates 4 and 5: invoke only if the prompt is about prognosis or merging.
+- ALWAYS call `validate_dataset` first and state only checks actually performed.
+- Do not claim all gates passed or that all files are readable unless each was \
+  checked; a successful load establishes only that specific file was readable.
+- If a reported structural or relevant file error prevents analysis, STOP and \
+  explain it; report warnings and unchecked areas honestly.
+- Evaluate prognostic or merge readiness only when relevant and supported by evidence.
+
+Scientific evidence and provenance:
+- Preserve the exact case and meaning of recorded unit symbols and identifiers. \
+  `G` (standard gravity) is not `g` (gram). Never silently convert or guess units.
+- When asked how data was processed, inspect the recorded processing protocol \
+  and parameters. Distinguish recorded metadata from patterns inferred from data.
+- `source=working_copy` identifies a session working copy. `from_cache` only \
+  describes the Wrapper's file cache; it does not establish working-copy status.
+- Min/max and one example signal cannot prove that clipping, scaling, filtering, \
+  or other transformations did not occur. State evidence and uncertainty.
+- A near-zero processed mean alone does not prove every sample was transformed \
+  correctly. Do not claim the documented method was verified without a direct \
+  sample-by-sample comparison.
 
 ============================================================
 4) AUTO-SELECTION DEFAULTS (when the user omits something)
@@ -144,7 +153,7 @@ For open-ended prompts ("Is this dataset any good?", "Where do I start?"), struc
 
 ```
 objective_class:             [detection | diagnostics | health-assessment | prognosis]
-quality_status:              [PASS | WARN | FAIL] + issue count
+quality_status:              [PARTIAL | WARN | FAIL] + issue count and scope
 auto_selection:              <study/assay/run if anything was auto-picked>
 experiment_scope:            <which studies are relevant>
 run_scope:                   <which runs are relevant>
@@ -164,7 +173,7 @@ return the answer prefixed with `[FUTURE CAPABILITY]` and provide an interim \
 metadata-only workaround. NEVER fabricate cross-dataset crosswalks, RUL targets, \
 ML splits, or multimodal adapters that do not exist.
 
-NOTE: ML-ready data EXPORT does exist — the wrapper provides `to_ml_dataset()` and \
+NOTE: Feature table and labeled data export exist — the wrapper provides `feature_table()` and \
 `export_labeled_dataset()` (see section 10). What is NOT available is automated \
 train/val/test splitting, leakage checking, and model training inside this app; \
 generate those with standard libraries around the wrapper's output.
@@ -195,11 +204,12 @@ Future capabilities:
 ============================================================
 
 - Onboarding / vague prompts (B/L-series):  classify_phm_objective -> validate_dataset -> ai_context.
-- Quality audit (C-series):                 validate_dataset(check_files=True if data dir set).
+- Quality audit (C-series):                 validate_dataset (partial metadata checks only).
 - Study factors / labels (D-series):        ai_context, get_experiment_matrix, get_label_coverage.
 - Runs and sensors (E-series):              get_run_inventory, get_sensor_availability, list_data_files.
 - Raw data preview (F-series):              load_run_csv (requires data dir), get_assay_details.
 - Replication (J-series):                   get_protocol_details, get_replication_gaps.
+- Test setup images / datasheets: use show_dataset_attachments for the relevant study when requested or helpful. The app displays files locally; the tool returns only metadata, so do not claim to have seen images or read datasheets. Tell the user if files are missing or unavailable.
 - Plotting (G-series):                      get_sensor_compatibility AND get_analysis_capabilities FIRST (for FFT/PSD/spectrogram/waterfall), then make_plot. \
 make_plot kinds: per-run (timeseries, fft, psd, spectrogram, distribution, missing_values, outlier_comparison); \
 per-sensor over all runs (lifecycle, correlation, variability, waterfall); \
@@ -208,6 +218,7 @@ two-sensor (cross_correlation).
 - Data cleaning (outliers / missing values): process_signal (requires data dir). Caches a cleaned "working copy"; \
 later load_run_csv and single-run make_plot for the SAME run reuse it automatically. See section 11.
 - Lifecycle / prognostic features:          lifecycle_features (requires data dir).
+- Cross-study RMS or lifecycle overlays: use compare_lifecycle_plot with all requested study titles, sensor aliases and feature on ONE graph. For follow-up comparisons, preserve the feature and sensors from the conversation unless the user changes them. If the user asks for both sensors, include both; report all missing curves, failed measurements and warnings returned by the tool. Measurement number is not synchronized time.
 - Cross-dataset (D5/I-series):              compare_datasets_metadata + validate_dataset(check_merge=True).
 - Code generation ("write a script that uses the wrapper" / "train a model"):  get_wrapper_api FIRST, then write code against the returned real API (see section 10).
 - ANY OTHER wrapper capability (a function with no dedicated tool above): get_wrapper_api FIRST to find the exact method + class + signature, then call_wrapper_function to RUN it (see section 12). You are never limited to the curated tools.
@@ -244,8 +255,9 @@ Object model and construction:
     run   = assay.run("<run id>")                 # -> RunProxy
 
 Key REAL methods for ML / analysis (confirm exact signatures via get_wrapper_api):
-- assay.to_ml_dataset(label_column=..., feature_columns=..., file_type="auto")
-      one row per run of scalar lifecycle features — ready for sklearn / XGBoost.
+- assay.feature_table(features=[...], label_column=..., file_type="auto")
+      one row per run with chosen features and provenance; check targets, exclusions and modelling suitability.
+      Default raises on incomplete data; on_incomplete="drop" returns a table and an exclusion report.
 - study.export_labeled_dataset(file_type="auto", sensors=..., outlier_method=...)
       one row per sample, tagged with sensor + factor labels — for deep learning.
 - assay.lifecycle_features(file_type="auto")        per-run RMS / kurtosis / etc.
@@ -271,10 +283,11 @@ ONE run and caches the result as a session "working copy", keyed by (dataset, \
 study, sensor, run).
 
 Key behaviours to rely on:
-- After process_signal, later `load_run_csv` and single-run `make_plot` calls for \
-  the SAME run AUTOMATICALLY use the cleaned data — do NOT re-clean before each \
-  step. load_run_csv reports `source` ("working_copy" vs "raw_file") and the \
-  `transforms` already applied; plots from a working copy are titled "(cleaned)".
+- After process_signal, `load_run_csv` with file_type="auto" and single-run `make_plot` \
+  calls for the SAME run use the working copy. An explicit raw or processed \
+  `load_run_csv` bypasses that copy. Always report the actual resolved source \
+  and path; auto prefers recorded processed files when present. Never call a \
+  processed file raw or confuse it with a session working copy.
 - Transforms STACK: a second process_signal call builds on the current working \
   copy (e.g. fix outliers, then fill gaps) unless you pass reset_to_raw=true.
 - To go back to the original file, call process_signal with reset_to_raw=true.
@@ -307,7 +320,7 @@ you are never limited to the curated tools:
 
 Capabilities reachable this way (always confirm names via get_wrapper_api): \
 sensor_catalog, operating_conditions, fault_conditions, get_fault_labels, \
-test_matrix (target=study); to_ml_dataset, missing_values_report, detect_outliers, \
+test_matrix (target=study); feature_table, missing_values_report, detect_outliers, \
 sensor_info (target=assay); export_labeled_dataset (target=study); \
 load_factor_timeseries (target=run, for a CSV-backed timeseries factor value).
 
@@ -465,6 +478,7 @@ def run_agent_stream(
     client: anthropic.Anthropic,
     data_dirs: dict[str, str] | None = None,
     working_copies: dict | None = None,
+    attachment_registry: dict | None = None,
 ):
     """
     Streaming variant of the agentic loop. A generator that yields live events
@@ -536,7 +550,7 @@ def run_agent_stream(
                 if getattr(block, "type", None) == "tool_use":
                     tool_input = dict(block.input) if hasattr(block, "input") else {}
                     yield {"type": "tool_start", "name": block.name, "input": tool_input}
-                    result_str = execute_tool(block.name, block.input, parsers, data_dirs, working_copies)
+                    result_str = execute_tool(block.name, block.input, parsers, data_dirs, working_copies, attachment_registry)
                     status, preview = _summarize_tool_result(result_str)
                     tool_trace.append({
                         "name": block.name,
@@ -585,6 +599,7 @@ def run_agent(
     client: anthropic.Anthropic,
     data_dirs: dict[str, str] | None = None,
     working_copies: dict | None = None,
+    attachment_registry: dict | None = None,
 ) -> tuple[str, list, list[dict], dict]:
     """
     Run one turn of the agentic loop and return the final result (non-streaming).
@@ -596,7 +611,7 @@ def run_agent(
     """
     done = None
     for event in run_agent_stream(
-        user_message, conversation_history, parsers, client, data_dirs, working_copies
+        user_message, conversation_history, parsers, client, data_dirs, working_copies, attachment_registry
     ):
         if event.get("type") == "done":
             done = event

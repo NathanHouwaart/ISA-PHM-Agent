@@ -12,7 +12,7 @@ answers grounded in the source ISA-JSON file and its CSV measurements.
 ISA-PHM is a metadata standard for Prognostics and Health Management
 testbench experiments, built on top of the ISA (Investigation, Study, Assay)
 framework originally developed for the life sciences. The ISA-PHM Wizard
-produces compliant ISA-JSON files; the ISA-PHM Data Engineering Wrapper
+exports ISA-JSON files; the ISA-PHM Data Engineering Wrapper
 parses them and exposes Python methods for inspection and signal processing.
 The wrapper is powerful but assumes the user already knows which method to
 call. This application closes that gap with a chat interface: the user asks
@@ -100,6 +100,20 @@ In the Streamlit UI:
 If no data directory is set, signal-level tools degrade gracefully and
 return a `data_not_available` status; metadata-only questions still work.
 
+Keep the API key in the sidebar or a local `.env` file; never commit it. Local
+virtual environments named `.venv` or `.venv-*` and generated bearing-plot HTML
+are ignored by Git. Use one environment for day-to-day work; old local
+environments can be reviewed separately before removing them. Local research
+scripts and dataset files are not automatically part of the application.
+
+To view dataset attachments, ask for the test-setup images or a sensor or
+component datasheet. The app displays supported local images and provides PDF
+previews and downloads for references in the selected study. The agent receives
+attachment metadata, not image or PDF contents, so it cannot interpret the
+contents. Missing or unsafe paths are not opened. Preview cards are scoped to
+the current chat session and are not included in the Markdown chat export.
+PDF viewing requires the `streamlit[pdf]` dependency in `requirements.txt`.
+
 ---
 
 ## How the agent works
@@ -150,8 +164,8 @@ The system prompt (`SYSTEM_PROMPT_TEMPLATE` in `agent.py`) is approximately
    Prognosis. Each ambition level has a different data requirement; the
    model uses this table to judge whether a dataset supports the question
    being asked.
-3. **Quality gates** — five checks that run before any analysis (see
-   below).
+3. **Preliminary checks** — the agent requests a partial metadata assessment
+   before analysis; this is not full ISA-PHM validation (see below).
 4. **Auto-selection defaults** — when the user does not specify a study,
    assay, or run, the system chooses one according to documented rules
    (study with the most runs, first vibration assay, last run).
@@ -167,22 +181,19 @@ The system prompt (`SYSTEM_PROMPT_TEMPLATE` in `agent.py`) is approximately
    the application. The model is required to answer such requests with a
    `[FUTURE CAPABILITY]` prefix and a metadata-only workaround.
 
-### Quality gates
+### Preliminary checks
 
-Five gates are run by the `validate_dataset` tool. The agent is required
-to call this tool before any non-trivial analysis.
+The Agent's `validate_dataset` tool runs a limited heuristic assessment of
+selected investigation, study, assay and PHM metadata. Merge comparison is
+optional. Its `partial` status means no errors were found in the checks it
+performed, **not** that the dataset passed a complete quality or conformance
+assessment. It does not verify the full ISA schema, every referenced file, the
+entire ISA-PHM specification, or scientific correctness. File loading checks
+only the particular file being loaded.
 
-| Gate | Checks | On failure |
-|------|--------|-----------|
-| 1. Structural | Hierarchy valid, required fields present, no broken cross-references | **STOP**. Return a concrete fix plan. No plots, no features. |
-| 2. File linkage | Linked CSV files exist on disk and are readable | **STOP** (only when a data directory is set) |
-| 3. PHM semantics | Fault type, operating conditions, units are detectable | **WARN**. Continue, but include a caveat in the response. |
-| 4. Prognostic readiness | Run ordering, trajectories, RUL labels | Only checked for prognosis prompts |
-| 5. Merge readiness | Factor crosswalk, sensor and unit alignment | Only checked when merging or comparing datasets |
-
-Gates 1 and 2 are blocking. Gate 3 produces a warning that the agent must
-surface in the response. Gates 4 and 5 are conditional — they run only
-when the prompt is in their scope.
+The shared ISA-PHM Specification validator is still experimental and is not
+yet integrated into the Agent or Wrapper. The Agent should report errors,
+warnings, assumptions and unchecked areas rather than claiming all gates pass.
 
 ---
 
@@ -342,9 +353,17 @@ Constants in `agent.py`:
 
 ## Smoke test
 
-A scripted smoke test that exercises the metadata path without an LLM
-call is provided in `smoke_test.py`. Adjust the `JSON_PATH` constant at
-the top of the file to point at a local ISA-PHM JSON before running.
+The automated smoke test exercises metadata tools without an LLM or a local
+research dataset. From the repository root, run:
+
+```bash
+python -m pip install pytest
+python -m pytest -q tests/test_metadata_smoke.py
+```
+
+It uses the bundled diagnostic mini fixture and runs as part of the test suite.
+Separate local research scripts, if present, are not required to run the
+application or its tests.
 
 Manual end-to-end smoke test:
 

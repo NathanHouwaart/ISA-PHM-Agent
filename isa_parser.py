@@ -889,6 +889,8 @@ class ISAParser:
                 if not self._assay_measurement_type(a):
                     warnings.append(f"Assay {title}/{alias} has no measurementType.")
 
+        structural_error_count = len(errors)
+
         # Gate 2 — PHM semantic
         ctx = self.get_ai_context(include_semantics=True)
         sm = ctx["semantic_manifest"]
@@ -978,18 +980,23 @@ class ISAParser:
                 if not experiment_match and not shared_mtypes:
                     merge_status = "fail"
 
-        status = "fail" if errors else ("warn" if warnings else "pass")
+        status = "fail" if errors else ("warn" if warnings else "partial")
         return {
             "status": status,
             "errors": errors,
             "warnings": warnings,
             "info": info,
+            "coverage": {
+                "status": "partial",
+                "note": "Heuristic metadata checks only; not an ISA-PHM conformance result.",
+                "not_checked": ["full ISA schema", "all file existence and readability", "complete ISA-PHM specification", "scientific correctness"],
+            },
             "phm_objective": objective,
             "merge_details": merge_details if check_merge else None,
             "gate_summary": {
-                "1_structural": "pass" if not any("investigation" in e.lower() or "No studies" in e for e in errors) else "fail",
-                "2_semantic": "pass" if sm["operating_condition_factors"] and (sm["fault_factors"] or sm["degradation_factors"]) else "warn",
-                "3_ambition": "pass" if objective["objective"] != "unknown" and not objective["inconsistency_warning"] else "warn",
+                "1_structural": "partial" if not structural_error_count else "fail",
+                "2_semantic": "partial" if sm["operating_condition_factors"] and (sm["fault_factors"] or sm["degradation_factors"]) else "warn",
+                "3_ambition": "partial" if objective["objective"] != "unknown" and not objective["inconsistency_warning"] else "warn",
                 "4_merge_readiness": merge_status,
             },
         }

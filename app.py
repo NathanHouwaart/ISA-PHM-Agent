@@ -64,34 +64,6 @@ st.markdown(
         transition: background 0.15s ease, border-color 0.15s ease,
                     box-shadow 0.15s ease;
     }
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="secondary"] {
-        background: transparent;
-        border: 1px solid transparent;
-        color: #2a313c;
-        box-shadow: none;
-    }
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="secondary"]:hover {
-        background: #eceef1;
-        border-color: transparent;
-        color: #111827;
-    }
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="primary"] {
-        background: #ffffff;
-        color: #111827;
-        border: 1px solid #e0e3e7;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06),
-                    0 1px 3px rgba(15, 23, 42, 0.04);
-    }
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="primary"]:hover {
-        background: #ffffff;
-        border-color: #d4d7dc;
-        color: #111827;
-    }
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="primary"]:focus,
-    section[data-testid="stSidebar"] [class*="st-key-navbtn_"] button[kind="primary"]:active {
-        background: #ffffff;
-        color: #111827;
-    }
 
     /* Status pills */
     .pill {
@@ -109,10 +81,6 @@ st.markdown(
     .pill-none { background: #eef0f3; color: #5b6470; }
 
     /* Sidebar polish */
-    section[data-testid="stSidebar"] {
-        background: #fafbfc;
-        border-right: 1px solid #eceef1;
-    }
     section[data-testid="stSidebar"] .block-container {
         padding-top: 1.5rem;
     }
@@ -127,6 +95,15 @@ st.markdown(
     /* Chat input rounding */
     [data-testid="stChatInput"] {
         border-radius: 12px;
+    }
+
+    /* Keep ordinary text selectable, including messages and sidebar details. */
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] *,
+    [data-testid="stCaptionContainer"],
+    [data-testid="stCaptionContainer"] * {
+        -webkit-user-select: text;
+        user-select: text;
     }
     </style>
     """,
@@ -148,6 +125,9 @@ if "working_copies" not in st.session_state:
     # "dataset::study::sensor::run_id"; written by process_signal, read by
     # load_run_csv / make_plot. Threaded into run_agent and mutated in place.
     st.session_state.working_copies = {}
+if "attachment_registry" not in st.session_state:
+    # Attachment objects remain in this user's session, not in model messages.
+    st.session_state.attachment_registry = {}
 if "validation_cache" not in st.session_state:
     st.session_state.validation_cache = {}
 if "client" not in st.session_state:
@@ -174,6 +154,7 @@ if "active_view" not in st.session_state:
 _PILL_CLASS = {
     "pass": "pill-pass",
     "warn": "pill-warn",
+    "partial": "pill-warn",
     "fail": "pill-fail",
 }
 
@@ -484,6 +465,37 @@ def _set_client_if_needed(api_key: str) -> None:
         st.session_state.client = anthropic.Anthropic(api_key=api_key)
 
 
+def _render_attachment(attachment_id: str) -> None:
+    entry = st.session_state.attachment_registry.get(attachment_id)
+    if not entry:
+        return
+    item = entry["attachment"]
+    title = f"{item.study} · {item.owner} · {item.kind}"
+    try:
+        if item.path is None or not item.path.is_file():
+            st.warning(f"Attachment no longer available: {item.reference}")
+            return
+        if item.path.stat().st_size > 20 * 1024 * 1024:
+            st.warning(f"{title}: file exceeds the 20 MB inline preview limit. Open it locally: {item.path}")
+            return
+        content = item.path.read_bytes()
+        if item.kind == "image":
+            st.image(content, caption=title, width="stretch")
+        else:
+            with st.expander(f"Datasheet: {item.owner}"):
+                st.caption(f"{item.study} · {item.reference}")
+                st.download_button("Download datasheet", data=content, file_name=item.path.name, mime="application/pdf", key=f"download_{attachment_id}")
+                if hasattr(st, "pdf"):
+                    try:
+                        st.pdf(content, height=600)
+                    except Exception:
+                        st.caption("Inline PDF preview is unavailable; use Download datasheet. Install streamlit[pdf] to enable the viewer.")
+                else:
+                    st.caption("Inline PDF preview is unavailable in this Streamlit version; use Download datasheet.")
+    except Exception as exc:
+        st.warning(f"Could not display {title}: {exc}")
+
+
 # ------------------------------------------------------------------
 # Sidebar
 # ------------------------------------------------------------------
@@ -628,6 +640,7 @@ with st.sidebar:
             _drop_working_copies(name)
             st.session_state.conversation_history = []
             st.session_state.chat_messages = []
+            st.session_state.attachment_registry = {}
             _reset_token_usage()
             st.rerun()
             continue
@@ -713,11 +726,13 @@ with st.sidebar:
             mime="text/markdown",
             use_container_width=True,
         )
+        st.caption("Markdown export contains chat text and dataset names, not plots, tool history or API keys. It cannot be imported as a session.")
 
     if st.button("Clear conversation", use_container_width=True):
         st.session_state.conversation_history = []
         st.session_state.chat_messages = []
         st.session_state.working_copies = {}
+        st.session_state.attachment_registry = {}
         _reset_token_usage()
         st.rerun()
 
@@ -759,8 +774,12 @@ if _active == "Chat":
         for msg in st.session_state.chat_messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
+                with st.expander("Copy message text"):
+                    st.code(msg["content"], language=None)
                 for plot_id in msg.get("plot_ids", []):
                     _render_registered_figure(plot_id)
+                for attachment_id in msg.get("attachment_ids", []):
+                    _render_attachment(attachment_id)
                 _render_agent_trace(msg.get("tool_trace", []))
                 _render_token_usage(msg.get("usage"))
 
@@ -768,10 +787,13 @@ if _active == "Chat":
             st.session_state.chat_messages.append({"role": "user", "content": user_input})
             with st.chat_message("user"):
                 st.markdown(user_input)
+                with st.expander("Copy message text"):
+                    st.code(user_input, language=None)
 
             with st.chat_message("assistant"):
                 try:
                     pre_plot_ids = set(tools_module.FIGURE_REGISTRY.keys())
+                    pre_attachment_ids = set(st.session_state.attachment_registry)
 
                     # Live streaming (point 4): show the model's thinking and its
                     # tool calls as they happen, and stream the answer token-by-token.
@@ -791,6 +813,7 @@ if _active == "Chat":
                         client=st.session_state.client,
                         data_dirs=st.session_state.data_dirs,
                         working_copies=st.session_state.working_copies,
+                        attachment_registry=st.session_state.attachment_registry,
                     ):
                         etype = ev.get("type")
                         if etype == "thinking":
@@ -824,6 +847,8 @@ if _active == "Chat":
                     if not thinking_parts:
                         thinking_ph.empty()
                     answer_ph.markdown(answer)
+                    with st.expander("Copy message text"):
+                        st.code(answer, language=None)
 
                     # Fold this turn's tokens into the running session total.
                     _sess = st.session_state.token_usage_total
@@ -836,17 +861,21 @@ if _active == "Chat":
                         pid for pid in tools_module.FIGURE_REGISTRY.keys()
                         if pid not in pre_plot_ids
                     ]
+                    new_attachment_ids = [item for item in st.session_state.attachment_registry if item not in pre_attachment_ids]
 
                     st.session_state.chat_messages.append({
                         "role": "assistant",
                         "content": answer,
                         "plot_ids": new_plot_ids,
+                        "attachment_ids": new_attachment_ids,
                         "tool_trace": tool_trace,
                         "usage": usage,
                     })
 
                     for pid in new_plot_ids:
                         _render_registered_figure(pid)
+                    for attachment_id in new_attachment_ids:
+                        _render_attachment(attachment_id)
                     _render_agent_trace(tool_trace)
                     _render_token_usage(usage)
 
@@ -986,7 +1015,7 @@ elif _active == "Quality Report":
                     for e in errors:
                         st.error(e)
             else:
-                st.success("No errors found.")
+                st.info("No errors found in the checks performed; validation is incomplete.")
 
             if warnings_list:
                 with st.expander(f"{len(warnings_list)} warning(s)", expanded=True):
