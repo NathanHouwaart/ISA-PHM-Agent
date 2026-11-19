@@ -88,6 +88,14 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
+The Wrapper submodule in turn pins the shared ISA-PHM Specification submodule
+and installs its validator at the same revision. When updating an existing
+checkout, run `git submodule update --init --recursive` before installing the
+requirements. Git and network access are needed for the initial install.
+The Agent's existing quality report uses its own checks; the shared draft
+Specification report is currently exposed by the Wrapper's Python API and is
+not yet presented in the Agent's chat or quality-report tab.
+
 In the Streamlit UI:
 
 1. Paste your Anthropic API key in the sidebar.
