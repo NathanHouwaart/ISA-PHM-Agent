@@ -557,7 +557,7 @@ with st.sidebar:
             st.session_state.show_api_key_panel = True
             st.rerun()
 
-    current_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    current_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
     st.caption(f"Model: `{current_model}`")
 
     # --- Session token usage ---
@@ -973,7 +973,6 @@ elif _active == "Quality Report":
     else:
         _GATE_LABELS = {
             "1_structural": "Gate 1 — Structural",
-            "2_semantic": "Gate 2 — PHM semantic",
             "3_ambition": "Gate 3 — PHM ambition",
             "4_merge_readiness": "Gate 4 — Merge readiness",
         }

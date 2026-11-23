@@ -97,6 +97,11 @@ from the Agent's heuristic checks. The Agent can also call
 `validate_specification` in chat. Loading a dataset from its folder permits
 layout and path checks; uploading JSON alone checks metadata only.
 
+The Agent can plot a run's operating conditions, or show a sensor beside those
+conditions on linked time axes. Recorded timestamps are the default. If a user
+requests first-sample overlap, the plot labels it as an approximation; it does
+not establish synchronization. Raw RMS is calculated without baseline removal.
+
 In the Streamlit UI:
 
 1. Paste your Anthropic API key in the sidebar.
@@ -350,11 +355,13 @@ Supported plot kinds: `time`, `fft`, `psd`, `spectrogram`, `waterfall`,
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ANTHROPIC_API_KEY` | — | Required for the agent to call the Claude Messages API. Can also be entered in the sidebar. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | The Claude model identifier. Override to `claude-opus-4-7` for higher-quality runs or `claude-haiku-4-7` for low-cost batch runs. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | The Claude model identifier; override it to select another available model. |
+| `ANTHROPIC_EFFORT` | `medium` | Reasoning effort for Claude Sonnet 5.5; adjust if needed. |
+| `ANTHROPIC_THINKING` | `1` | Set to `0` to use Sonnet 5.5's lower `between_tools` thinking mode. |
 
 Constants in `agent.py`:
 
-- `MAX_TOKENS = 4096` — per-response budget.
+- `ANTHROPIC_MAX_TOKENS = 8192` — default per-response output-token limit; override it in the environment if needed.
 - `MAX_TOOL_ROUNDS = 15` — safety cap on tool-calling iterations.
 
 ---

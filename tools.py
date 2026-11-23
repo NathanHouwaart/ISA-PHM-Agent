@@ -148,11 +148,13 @@ def _value_stats(df, column: str = "value") -> dict | None:
 
 def _resolve_run_id(parser, assay_proxy, study_title, sensor_alias, relative_path=None):
     """Resolve a single run_id consistently across process_signal, load_run_csv,
-    and make_plot. Prefers the run whose CSV matches relative_path; otherwise
-    defaults to the LAST run (most degraded — relevant for prognostics)."""
+    and make_plot. An explicitly supplied path must match; only an omitted
+    path defaults to the last recorded run."""
     run_id = None
     if relative_path:
         run_id = parser.get_run_id_for_path(study_title, sensor_alias, relative_path)
+        if run_id is None:
+            raise ValueError(f"No run for sensor {sensor_alias!r} matches path {relative_path!r}; list its data files and choose a recorded path.")
     if run_id is None:
         try:
             runs = assay_proxy.list_runs()
@@ -202,7 +204,9 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
             "name": "list_studies",
             "description": (
                 "List every study: title, description, number of assays/samples, "
-                "sensor aliases, factor names. Use before drilling into a study."
+                "sensor aliases, factor names, and when the Wrapper is connected, "
+                "distinct run ID and sensor-run record counts. Shared run IDs do not establish synchronization. "
+                "Use before drilling into a study."
             ),
             "input_schema": {
                 "type": "object",
@@ -275,23 +279,21 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
         },
 
         # ------------------------------------------------------------------
-        # Semantic / PHM helpers
+        # Metadata / PHM helpers
         # ------------------------------------------------------------------
         {
             "name": "ai_context",
             "description": (
-                "Normalized PHM view of the investigation: experiment_type, "
+                "Metadata view of the investigation: experiment_type, "
                 "studies with factor classifications (fault / operating_condition / "
-                "degradation / other), assay measurement types, semantic manifest, "
-                "and inferred PHM objective (detection / diagnostics / "
-                "health assessment / prognosis). ALWAYS prefer this over raw "
-                "metadata when answering a PHM question."
+                "degradation / other), assay measurement types, metadata summary, "
+                "and a separately labelled inferred PHM objective. Field names "
+                "and values are presented as recorded."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     **dataset_param,
-                    "include_semantics": {"type": "boolean", "default": True},
                 },
                 "required": ["dataset_name"],
             },
@@ -321,7 +323,6 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                 "type": "object",
                 "properties": {
                     **dataset_param,
-                    "semantic_strict": {"type": "boolean", "default": False},
                     "check_merge": {"type": "boolean", "default": False},
                     "merge_target_dataset": {
                         "type": "string",
@@ -349,9 +350,10 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
         {
             "name": "get_run_inventory",
             "description": (
-                "Per-sample run inventory for one study: run_index, sample name, "
-                "factor values (resolved), characteristics, data-file paths per "
-                "assay, plus a continuity check against declared total_runs."
+                "Inventory for one study: each record is one sensor/assay measurement "
+                "for a run, so several records may share a run identifier. "
+                "The continuity summary separately counts distinct run identifiers "
+                "and sensor-run records. Matching identifiers do not prove synchronization."
             ),
             "input_schema": {
                 "type": "object",
@@ -741,7 +743,9 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                 "PLOT KINDS:\n"
                 "• Single-run (need sensor_alias; default to last run if "
                 "relative_path omitted): timeseries, fft, psd, spectrogram, "
-                "distribution, missing_values, outlier_comparison.\n"
+                "distribution, missing_values, outlier_comparison, operating_conditions, "
+                "sensor_with_operating_conditions. The latter uses recorded timestamps by default; "
+                "first_sample alignment is an approximate visual assumption, not synchronization.\n"
                 "• Single-sensor across all runs (need sensor_alias): lifecycle "
                 "(feature trend, e.g. RMS), correlation (feature-correlation "
                 "heatmap), variability (per-run amplitude boxplot), waterfall "
@@ -764,6 +768,7 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                             "timeseries", "fft", "psd", "spectrogram",
                             "distribution", "missing_values",
                             "outlier_comparison", "lifecycle", "correlation",
+                            "operating_conditions", "sensor_with_operating_conditions",
                             "variability", "waterfall", "multi_lifecycle",
                             "sensor_boxplot", "sensor_lifecycle_correlation",
                             "cross_correlation",
@@ -799,6 +804,16 @@ def build_tool_definitions(dataset_names: list[str]) -> list[dict]:
                             "multi_lifecycle, sensor_lifecycle_correlation}: "
                             "rms, kurtosis, crest_factor, peak2peak, mean, std."
                         ),
+                    },
+                    "alignment": {
+                        "type": "string",
+                        "enum": ["recorded", "first_sample"],
+                        "default": "recorded",
+                        "description": "For sensor_with_operating_conditions only. first_sample approximates overlap for display and must be disclosed; recorded leaves the original time origins unchanged.",
+                    },
+                    "file_type": {
+                        "type": "string", "enum": ["raw", "processed", "auto"], "default": "auto",
+                        "description": "Choose raw or processed explicitly when requested. Auto prefers processed if recorded.",
                     },
                 },
                 "required": ["dataset_name", "kind", "study_title"],
@@ -932,9 +947,7 @@ def execute_tool(
             result = parser.search_metadata(tool_input["term"])
 
         elif tool_name == "ai_context":
-            result = parser.get_ai_context(
-                include_semantics=tool_input.get("include_semantics", True),
-            )
+            result = parser.get_ai_context()
 
         elif tool_name == "validate_specification":
             from specification_validation import validate_specification
@@ -944,7 +957,6 @@ def execute_tool(
             merge_target_name = tool_input.get("merge_target_dataset")
             merge_target_parser = parsers.get(merge_target_name) if merge_target_name else None
             result = parser.validate_dataset(
-                semantic_strict=tool_input.get("semantic_strict", False),
                 check_merge=tool_input.get("check_merge", False),
                 merge_target_parser=merge_target_parser,
             )
@@ -1059,8 +1071,8 @@ def _show_dataset_attachments(parser: ISAParser, tool_input: dict, dataset_name:
 
 
 def _compare_datasets_metadata(pa: ISAParser, pb: ISAParser, name_a: str, name_b: str) -> dict:
-    ca = pa.get_ai_context(include_semantics=True)
-    cb = pb.get_ai_context(include_semantics=True)
+    ca = pa.get_ai_context()
+    cb = pb.get_ai_context()
 
     def _median_runs(ctx):
         runs = [s["n_runs"] for s in ctx["studies"]]
@@ -1088,8 +1100,8 @@ def _compare_datasets_metadata(pa: ISAParser, pb: ISAParser, name_a: str, name_b
     _row("n_studies", ca["n_studies"], cb["n_studies"])
     _row("median_runs_per_study", _median_runs(ca), _median_runs(cb))
 
-    factors_a = set(ca["semantic_manifest"]["all_factor_names"])
-    factors_b = set(cb["semantic_manifest"]["all_factor_names"])
+    factors_a = set(ca["metadata_summary"]["all_factor_names"])
+    factors_b = set(cb["metadata_summary"]["all_factor_names"])
     _row(
         "study_factor_keys",
         sorted(factors_a),
@@ -1099,8 +1111,8 @@ def _compare_datasets_metadata(pa: ISAParser, pb: ISAParser, name_a: str, name_b
         ),
     )
 
-    mtypes_a = set(ca["semantic_manifest"]["all_measurement_types"])
-    mtypes_b = set(cb["semantic_manifest"]["all_measurement_types"])
+    mtypes_a = set(ca["metadata_summary"]["all_measurement_types"])
+    mtypes_b = set(cb["metadata_summary"]["all_measurement_types"])
     _row(
         "sensor_measurement_types",
         sorted(mtypes_a),
@@ -1831,41 +1843,12 @@ def _compare_lifecycle_plot(parser: ISAParser, tool_input: dict, dataset_name: s
     return {"plot_id": plot_id, "plot_kind": "compare_lifecycle_plot", "feature": feature, "curves": list(curves), "missing": missing, "warnings": warnings, "file_types": sorted(sources), "x_axis": "Measurement number (not synchronized time)", "message": "Cross-study comparison registered. The app will render one plot."}
 
 
-def _build_multi_lifecycle(study_proxy, feature: str):
-    """Compose {sensor_alias: lifecycle_df} for every sensor in the study and
-    overlay them via the wrapper's ISAPlotter.plot_multi_lifecycle. This is the
-    'Multi-RMS' comparison. Returns a Bokeh figure, or an error dict."""
+def _build_multi_lifecycle(study_proxy, feature: str, file_type: str = "auto"):
+    """Use the Wrapper's grouped plot, including unit and failure checks."""
     try:
-        summaries = study_proxy.list_assays()
+        return study_proxy.plot_sensor_features(feature=feature, file_type=file_type, n_workers=2)
     except Exception as e:
-        return {"error": f"Could not list sensors: {type(e).__name__}: {e}"}
-    if not summaries:
-        return {"error": "This study has no assays/sensors to overlay."}
-
-    dfs: dict = {}
-    skipped: list[str] = []
-    for summ in summaries:
-        label = getattr(summ, "sensor_alias", None) or getattr(summ, "assay_id", "?")
-        try:
-            lc = study_proxy.assay(summ.assay_id).lifecycle_features(file_type="auto")
-        except Exception:
-            skipped.append(label)
-            continue
-        if lc is None or lc.empty or feature not in lc.columns:
-            skipped.append(label)
-            continue
-        dfs[label] = lc
-
-    if not dfs:
-        return {"error": (
-            f"Could not compute '{feature}' lifecycle features for any sensor "
-            f"in this study."
-        )}
-    try:
-        from isa_phm.plotter import ISAPlotter
-        return ISAPlotter().plot_multi_lifecycle(dfs, feature=feature)
-    except Exception as e:
-        return {"error": f"plot_multi_lifecycle failed: {type(e).__name__}: {e}"}
+        return {"error": f"Could not plot sensor features: {type(e).__name__}: {e}"}
 
 
 # Single-run kinds that can be re-rendered from an in-memory (cleaned) df.
@@ -1892,7 +1875,7 @@ def _frequency_capability(assay_proxy, run_id: str | None = None) -> tuple[float
             "sampling_frequency": _jsonify(capabilities.sampling_frequency),
             "message": (
                 "Frequency-domain analysis is unavailable for this selection. "
-                "Provide an explicit Sampling Rate / Sampling Frequency / fs "
+                "Provide an explicit Sampling Rate "
                 "measurement parameter with a valid Hz-family unit."
             ),
         }
@@ -1947,6 +1930,9 @@ def _make_plot_via_wrapper(
     sensor_alias_2 = tool_input.get("sensor_alias_2")
     relative_path = tool_input.get("relative_path")
     feature = tool_input.get("feature", "rms")
+    file_type = tool_input.get("file_type", "auto")
+    if file_type not in {"raw", "processed", "auto"}:
+        return {"error": "file_type must be raw, processed, or auto."}
 
     if not study_title:
         return {"error": "Plotting requires study_title."}
@@ -1960,11 +1946,42 @@ def _make_plot_via_wrapper(
             "plot_id": plot_id,
             "plot_kind": kind,
             "message": f"{kind} plot registered. The app will render it.",
+            "requested_file_type": file_type,
         }
         if kind in _FEATURE_KINDS:
             out["feature"] = feature
+            if feature == "rms":
+                out["interpretation_note"] = "RMS is calculated on the recorded signal without baseline removal; it does not by itself measure change, damage, or degradation."
+        if kind == "multi_lifecycle":
+            summaries = study_proxy.list_assays()
+            out["sensor_names"] = [item.sensor_alias for item in summaries]
+            out["measurement_count"] = sum(getattr(item, "n_runs", 0) for item in summaries)
+            out["run_numbers"] = sorted({run.run_number for item in summaries for run in study_proxy.assay(item.assay_id).list_runs()})
+            out["count_note"] = "measurement_count counts sensor-run records, not distinct runs; shared run numbers do not establish synchronization."
+            if feature in {"rms", "mean", "max", "peak2peak", "std"} and summaries:
+                unit = study_proxy.assay(summaries[0].assay_id).analysis_capabilities().measured_unit
+                out["measured_unit"] = unit.value if unit.available else None
+        if kind == "sensor_with_operating_conditions":
+            out["alignment"] = tool_input.get("alignment", "recorded")
+            out["timing_note"] = "Separate panels share an axis. With first_sample, only the first sensor sample and the earliest selected condition sample are placed at zero; the relative timing between conditions is preserved. This visual assumption is not verified synchronization."
+            if hasattr(parser.wrapper, "study"):
+                factors = parser.wrapper.study(study_title).list_factors()
+                out["condition_names"] = [factor.factor_name for factor in factors if factor.factor_type.casefold() == "operating condition"]
+                out["panel_note"] = "Only the sensor and listed operating conditions are plotted; scalar fault factors are not plot panels."
         if run_id is not None:
             out["run_id"] = run_id
+            if kind != "operating_conditions":
+                if wc is not None:
+                    out["source"] = {"type": "working_copy"}
+                else:
+                    selected = next((item for item in assay_proxy.list_runs() if item.run_id == run_id), None)
+                    if selected is not None:
+                        processed_path = getattr(selected, "processed_file_path", None)
+                        raw_path = getattr(selected, "raw_file_path", None)
+                        resolved = file_type if file_type != "auto" else ("processed" if processed_path else "raw")
+                        path = processed_path if resolved == "processed" else raw_path
+                        if path:
+                            out["source"] = {"type": resolved, "file_path": path}
         return out
 
     # ------------------------------------------------------------------
@@ -1976,12 +1993,12 @@ def _make_plot_via_wrapper(
             return err
         try:
             if kind == "multi_lifecycle":
-                fig = _build_multi_lifecycle(study_proxy, feature)
+                fig = _build_multi_lifecycle(study_proxy, feature, file_type)
             elif kind == "sensor_boxplot":
-                fig = study_proxy.plot_sensor_boxplot(file_type="auto")
+                fig = study_proxy.plot_sensor_boxplot(file_type=file_type)
             elif kind == "sensor_lifecycle_correlation":
                 fig = study_proxy.plot_sensor_lifecycle_correlation(
-                    feature=feature, file_type="auto"
+                    feature=feature, file_type=file_type
                 )
             elif kind == "cross_correlation":
                 if not sensor_alias or not sensor_alias_2:
@@ -1996,7 +2013,7 @@ def _make_plot_via_wrapper(
                         "Could not map one of the sensor aliases to an assay. "
                         "Check the sensor names."
                     )}
-                fig = study_proxy.plot_cross_correlation(f1, f2, file_type="auto")
+                fig = study_proxy.plot_cross_correlation(f1, f2, file_type=file_type)
             else:  # pragma: no cover
                 return {"error": f"Unhandled study plot kind: {kind}"}
         except Exception as e:
@@ -2026,13 +2043,13 @@ def _make_plot_via_wrapper(
                 return error
         try:
             if kind == "lifecycle":
-                fig = assay_proxy.plot_lifecycle(feature=feature, file_type="auto")
+                fig = assay_proxy.plot_lifecycle(feature=feature, file_type=file_type)
             elif kind == "correlation":
-                fig = assay_proxy.plot_correlation(file_type="auto")
+                fig = assay_proxy.plot_correlation(file_type=file_type)
             elif kind == "variability":
-                fig = assay_proxy.plot_variability(file_type="auto")
+                fig = assay_proxy.plot_variability(file_type=file_type)
             elif kind == "waterfall":
-                fig = assay_proxy.plot_waterfall(file_type="auto")
+                fig = assay_proxy.plot_waterfall(file_type=file_type)
             else:  # pragma: no cover
                 return {"error": f"Unhandled multi-run kind: {kind}"}
         except Exception as e:
@@ -2047,32 +2064,38 @@ def _make_plot_via_wrapper(
         if error is not None:
             return error
 
-    wc = working_copies.get(_wc_key(dataset_name, study_title, sensor_alias, run_id))
+    wc = working_copies.get(_wc_key(dataset_name, study_title, sensor_alias, run_id)) if file_type == 'auto' and kind in _WORKING_COPY_PLOT_KINDS else None
     suffix = f"{kind} (cleaned)" if wc is not None else kind
     title = _title(sensor_alias, suffix)
 
     try:
-        if wc is not None:
+        if kind == "operating_conditions":
+            fig = assay_proxy.run(run_id).plot_operating_conditions()
+        elif kind == "sensor_with_operating_conditions":
+            fig = assay_proxy.run(run_id).plot_with_operating_conditions(
+                file_type=file_type, alignment=tool_input.get("alignment", "recorded")
+            )
+        elif wc is not None:
             # Render from the cached cleaned data so transforms are reflected.
             if kind == "outlier_comparison":
-                df_raw = assay_proxy.load_dataframe(run_id=run_id, file_type="auto")
+                df_raw = assay_proxy.load_dataframe(run_id=run_id, file_type=file_type)
                 fig = assay_proxy.plot_outlier_comparison(df_raw, wc["df"], title=title)
             else:
                 fig = _render_single_run_plot(assay_proxy, kind, wc["df"], title, run_id)
         elif kind == "timeseries":
-            fig = assay_proxy.plot_timeseries(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_timeseries(run_id=run_id, file_type=file_type)
         elif kind == "fft":
-            fig = assay_proxy.plot_frequency_domain(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_frequency_domain(run_id=run_id, file_type=file_type)
         elif kind == "psd":
-            fig = assay_proxy.plot_psd(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_psd(run_id=run_id, file_type=file_type)
         elif kind == "spectrogram":
-            fig = assay_proxy.plot_spectrogram(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_spectrogram(run_id=run_id, file_type=file_type)
         elif kind == "distribution":
-            fig = assay_proxy.plot_distribution(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_distribution(run_id=run_id, file_type=file_type)
         elif kind == "missing_values":
-            fig = assay_proxy.plot_missing_values(run_id=run_id, file_type="auto")
+            fig = assay_proxy.plot_missing_values(run_id=run_id, file_type=file_type)
         elif kind == "outlier_comparison":
-            df = assay_proxy.load_dataframe(run_id=run_id, file_type="auto")
+            df = assay_proxy.load_dataframe(run_id=run_id, file_type=file_type)
             df_clean = assay_proxy.fix_outliers(df)
             fig = assay_proxy.plot_outlier_comparison(df, df_clean)
         else:

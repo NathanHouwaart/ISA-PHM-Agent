@@ -19,13 +19,14 @@ import anthropic
 from isa_parser import ISAParser
 from tools import build_tool_definitions, execute_tool
 
-# Model is configurable via environment (defaults to Sonnet 4.6 — the prototype baseline).
+# Model is configurable via environment; Sonnet 5.5 is the default.
 # For thesis demos, set ANTHROPIC_MODEL=claude-opus-4-7. For low-cost batch runs, set
 # ANTHROPIC_MODEL=claude-haiku-4-7.
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 # Streaming uses get_final_message(), so a larger ceiling is safe (no HTTP-timeout
 # guard). Give room for adaptive thinking + the answer.
 MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "8192"))
+SONNET_55_EFFORT = os.getenv("ANTHROPIC_EFFORT", "medium").strip().lower()
 MAX_TOOL_ROUNDS = 15
 # Live "thinking" feedback (iteration-2 point 4). Adaptive thinking streams the
 # model's reasoning so the UI can show it while the agent works. On by default;
@@ -109,6 +110,36 @@ Procedure:
 - Evaluate prognostic or merge readiness only when relevant and supported by evidence.
 
 Scientific evidence and provenance:
+- RMS is calculated on the recorded signal without baseline removal. For FBG \
+  wavelength, do not call it wavelength shift, strain, vibration or damage \
+  without evidence of the necessary transformation. Its absolute baseline \
+  can dominate RMS. Do not claim that baseline correction or a rising feature \
+  automatically establishes damage, a health indicator, strain, or its causes; \
+  such interpretations require independent evidence. Do not generalize one \
+  assay's metadata to all sensors or runs.
+- You cannot see the figures returned by plot tools. Never claim an observed \
+  rising or falling trend, a pattern, or a physical cause without a tool returning \
+  numerical evidence for that specific claim. Report the unit returned by the \
+  plot tool exactly; never substitute nm for fm or imply unit conversion. Do not \
+  invent typical baseline values or perform unit conversions without a tool.
+- A recorded feature is not a necessary or sufficient indicator of damage. \
+  Do not claim a trend proves, indicates, or is consistent with damage or a \
+  physical mechanism without specific independent evidence. Removing a baseline \
+  alone does not make an RMS a validated health indicator.
+- Distinguish distinct run numbers from sensor-run measurements. For example, \
+  eight sensors over five runs give 40 measurements, not 40 runs.
+- For a study-count overview, use the distinct_run_ids and sensor_run_records \
+  returned by list_studies when available. Do not repeatedly request full per-run \
+  inventories if only those counts were requested.
+- When a user requests raw or processed data, pass that file_type explicitly. \
+  Auto can choose processed when available; never describe an auto-selected \
+  multi-run plot as entirely raw or processed without verifying the sources.
+- Sensor and operating-condition plots do not establish synchronization. \
+  First-sample alignment is only an approximate visual overlap, never measured \
+  synchronization; use it only when requested or explicitly accepted. The sensor \
+  and earliest condition sample are placed at zero; offsets between conditions \
+  remain. The plot uses separate linked panels, not overlaid signal traces. \
+  Only the tool's condition_names are condition panels; fault factors are not plotted.
 - Preserve the exact case and meaning of recorded unit symbols and identifiers. \
   `G` (standard gravity) is not `g` (gram). Never silently convert or guess units.
 - When asked how data was processed, inspect the recorded processing protocol \
@@ -130,7 +161,7 @@ Scientific evidence and provenance:
 | Dataset path  | ASK the user. Do not proceed.                                             |
 | Study         | Pick the study with the most runs.                                        |
 | Assay         | Pick the first vibration-type assay; if none, pick the first assay.       |
-| Run           | Default to the LAST run (most degraded - relevant for prognostics).       |
+| Run           | Default to the LAST recorded run; do not assume it is most degraded.      |
 | PHM objective | Infer from `experiment_type`. If ambiguous, state both possibilities.     |
 
 Whenever you auto-select anything, BEGIN your reply with this prefix block:
@@ -230,6 +261,7 @@ two-sensor (cross_correlation).
 - Data cleaning (outliers / missing values): process_signal (requires data dir). Caches a cleaned "working copy"; \
 later load_run_csv and single-run make_plot for the SAME run reuse it automatically. See section 11.
 - Lifecycle / prognostic features:          lifecycle_features (requires data dir).
+- Run inventory: count distinct run identifiers separately from per-sensor records. Matching identifiers do not establish simultaneous measurement or time synchronization. A sampling period or interval between acquisitions is not the duration of an individual recorded file; only state a duration when supported by file timestamps or explicit duration metadata.
 - Cross-study RMS or lifecycle overlays: use compare_lifecycle_plot with all requested study titles, sensor aliases and feature on ONE graph. For follow-up comparisons, preserve the feature and sensors from the conversation unless the user changes them. If the user asks for both sensors, include both; report all missing curves, failed measurements and warnings returned by the tool. Measurement number is not synchronized time.
 - Cross-dataset (D5/I-series):              compare_datasets_metadata + validate_dataset(check_merge=True).
 - Code generation ("write a script that uses the wrapper" / "train a model"):  get_wrapper_api FIRST, then write code against the returned real API (see section 10).
@@ -272,7 +304,8 @@ Key REAL methods for ML / analysis (confirm exact signatures via get_wrapper_api
       Default raises on incomplete data; on_incomplete="drop" returns a table and an exclusion report.
 - study.export_labeled_dataset(file_type="auto", sensors=..., outlier_method=...)
       one row per sample, tagged with sensor + factor labels — for deep learning.
-- assay.lifecycle_features(file_type="auto")        per-run RMS / kurtosis / etc.
+- assay.lifecycle_features(file_type="auto")        per-run RMS / kurtosis / etc.; \
+  it does not calculate trend slopes or monotonicity flags.
 - assay.load_dataframe_with_meta(run_id=..., file_type="auto")  -> (df, meta).
 - assay.plot_timeseries / plot_frequency_domain / plot_psd / ...  -> Bokeh figures.
 - run.factor_values()  this run's operating conditions / settings. A factor value \
@@ -303,8 +336,8 @@ Key behaviours to rely on:
 - Transforms STACK: a second process_signal call builds on the current working \
   copy (e.g. fix outliers, then fill gaps) unless you pass reset_to_raw=true.
 - To go back to the original file, call process_signal with reset_to_raw=true.
-- process_signal defaults to the LAST run when relative_path is omitted (the most \
-  degraded run — usually what prognostics cares about). Pass relative_path to target \
+- process_signal defaults to the LAST recorded run when relative_path is omitted. \
+  Do not assume it is the most degraded. Pass relative_path to target \
   a specific run.
 - It only changes session state, never the CSV on disk. fix_outliers/fill_missing \
   are the ONLY transforms; do not claim others.
@@ -334,7 +367,9 @@ Capabilities reachable this way (always confirm names via get_wrapper_api): \
 sensor_catalog, operating_conditions, fault_conditions, get_fault_labels, \
 test_matrix (target=study); feature_table, missing_values_report, detect_outliers, \
 sensor_info (target=assay); export_labeled_dataset (target=study); \
-load_factor_timeseries (target=run, for a CSV-backed timeseries factor value).
+load_factor_timeseries (target=run, for a CSV-backed timeseries factor value); \
+run.plot_operating_conditions and run.plot_with_operating_conditions (target=run); \
+study.plot_sensor_features (target=study). These plots are also available through make_plot.
 
 Rules:
 - NEVER invent a method or argument. If get_wrapper_api does not list it, it does \
@@ -447,6 +482,10 @@ def _stream_kwargs(system_prompt: str, tool_definitions: list, use_thinking: boo
         # Adaptive thinking: the model decides how much to reason. Streams as
         # thinking_delta events the UI can show live (point 4).
         kw["thinking"] = {"type": "adaptive"}
+    if MODEL == "claude-sonnet-5-5":
+        kw["output_config"] = {"effort": SONNET_55_EFFORT}
+        if not use_thinking:
+            kw["thinking"] = {"type": "between_tools"}
     return kw
 
 

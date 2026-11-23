@@ -25,3 +25,6 @@ venv/
 
 # Internal iteration reports (Dutch-language working documents)
 ITERATIE_*.md
+.ruff_cache/
+.coverage
+htmlcov/

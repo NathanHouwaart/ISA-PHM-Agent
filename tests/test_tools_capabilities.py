@@ -80,6 +80,67 @@ class ValidationCoverageTests(unittest.TestCase):
         self.assertNotEqual(result["gate_summary"]["1_structural"], "pass")
         self.assertNotEqual(result["status"], "pass")
 
+    def test_invalid_explicit_file_never_falls_back_to_last_run(self):
+        parser = load_from_file(str(FIXTURE))
+        base = {"dataset_name": "mini", "study_title": "Mini Diagnostic Study",
+                "sensor_alias": "mini-vibration", "relative_path": "missing-run.csv"}
+        cases = [
+            ("load_run_csv", base),
+            ("get_analysis_capabilities", base),
+            ("make_plot", {**base, "kind": "timeseries"}),
+            ("call_wrapper_function", {**base, "target": "run", "method": "overview"}),
+        ]
+        for name, args in cases:
+            with self.subTest(tool=name):
+                result = json.loads(execute_tool(name, args, {"mini": parser}))
+                self.assertIn("matches path", result["error"])
+
+    def test_grouped_plot_delegates_to_wrapper_and_reports_errors(self):
+        from tools import _build_multi_lifecycle
+        calls = []
+        study = SimpleNamespace(plot_sensor_features=lambda **kw: calls.append(kw) or "figure")
+        self.assertEqual(_build_multi_lifecycle(study, "rms", "raw"), "figure")
+        self.assertEqual(calls, [{"feature": "rms", "file_type": "raw", "n_workers": 2}])
+        def fail(**_kwargs):
+            raise ValueError('different units')
+        self.assertIn('different units', _build_multi_lifecycle(SimpleNamespace(plot_sensor_features=fail), 'rms')['error'])
+
+    def test_timeline_plot_exposes_approximation_and_raw_source(self):
+        from bokeh.layouts import column
+        from bokeh.models import Div
+        calls = []
+        run = SimpleNamespace(plot_with_operating_conditions=lambda **kw: calls.append(kw) or column(Div(text='Plot')))
+        assay = SimpleNamespace(
+            run=lambda number: run,
+            list_runs=lambda: [SimpleNamespace(run_id='run_02', raw_file_path='raw.csv', processed_file_path=None)],
+        )
+        parser = SimpleNamespace(wrapper=object(), get_run_id_for_path=lambda *args: 'run_02')
+        args = {'dataset_name': 'mini', 'kind': 'sensor_with_operating_conditions',
+                'study_title': 'Study', 'sensor_alias': 'Sensor', 'relative_path': 'raw.csv',
+                'file_type': 'raw', 'alignment': 'first_sample'}
+        with patch('tools._resolve_assay_proxy', return_value=(assay, None)):
+            result = json.loads(execute_tool('make_plot', args, {'mini': parser}))
+        self.assertEqual(calls, [{'file_type': 'raw', 'alignment': 'first_sample'}])
+        self.assertEqual(result['source'], {'type': 'raw', 'file_path': 'raw.csv'})
+        self.assertIn('not verified synchronization', result['timing_note'])
+        self.assertIn(result['plot_id'], FIGURE_REGISTRY)
+
+    def test_multi_sensor_plot_reports_units_and_distinct_run_numbers(self):
+        from bokeh.plotting import figure
+        summaries = [SimpleNamespace(assay_id='a', sensor_alias='Sensor A', n_runs=2),
+                     SimpleNamespace(assay_id='b', sensor_alias='Sensor B', n_runs=2)]
+        assay = SimpleNamespace(list_runs=lambda: [SimpleNamespace(run_number=1), SimpleNamespace(run_number=2)],
+                                analysis_capabilities=lambda: SimpleNamespace(measured_unit=SimpleNamespace(available=True, value='fm')))
+        study = SimpleNamespace(list_assays=lambda: summaries, assay=lambda _id: assay)
+        parser = SimpleNamespace(wrapper=object())
+        args = {'dataset_name': 'mini', 'kind': 'multi_lifecycle', 'study_title': 'Study', 'feature': 'rms', 'file_type': 'raw'}
+        with patch('tools._resolve_study_proxy', return_value=(study, None)), patch('tools._build_multi_lifecycle', return_value=figure()):
+            result = json.loads(execute_tool('make_plot', args, {'mini': parser}))
+        self.assertEqual(result['measured_unit'], 'fm')
+        self.assertEqual(result['measurement_count'], 4)
+        self.assertEqual(result['run_numbers'], [1, 2])
+        self.assertIn('not distinct runs', result['count_note'])
+
 
 class CrossStudyLifecyclePlotTests(unittest.TestCase):
     @staticmethod
@@ -229,6 +290,8 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertEqual(overview["number_of_studies"], 1)
         self.assertEqual(studies[0]["identifier"], "mini-study-001")
         self.assertEqual(studies[0]["number_of_assays"], 1)
+        self.assertEqual(studies[0]["distinct_run_ids"], 2)
+        self.assertEqual(studies[0]["sensor_run_records"], 2)
 
     def test_parser_study_and_assay_details_use_wrapper_structure(self):
         parser = load_from_file(str(FIXTURE))
@@ -258,6 +321,29 @@ class DiagnosticSignalMiniTests(unittest.TestCase):
         self.assertEqual([run["run_id"] for run in inventory["runs"]], ["run_01", "run_02"])
         self.assertTrue(all(run["sensor_alias"] == "mini-vibration" for run in inventory["runs"]))
         self.assertTrue(all(len(run["data_files"]) == 1 for run in inventory["runs"]))
+
+    def test_run_inventory_distinguishes_run_ids_from_sensor_records(self):
+        parser = load_from_file(str(FIXTURE))
+        def row(run_id, number, assay):
+            return SimpleNamespace(run_id=run_id, run_number=number, assay_id=assay,
+                sensor_alias=assay, raw_file_path=f'{assay}-{run_id}.csv', processed_file_path=None,
+                factor_values={}, measurement_params=[], processing_params=[])
+        records = [row('run_01', 1, 'a'), row('run_02', 2, 'a'),
+                   row('run_01', 1, 'b'), row('run_02', 2, 'b')]
+        study_proxy = SimpleNamespace(title='Mini Diagnostic Study', list_runs=lambda: records)
+        parser.wrapper = SimpleNamespace(study=lambda _title: study_proxy)
+        with patch('isa_parser._METADATA_LIST_BUDGET', 1):
+            # _cap_records has a default argument, so patch it explicitly to
+            # exercise truncation while retaining the actual serialized rows.
+            from isa_parser import _cap_records
+            with patch('isa_parser._cap_records', side_effect=lambda items: _cap_records(items, budget=350)):
+                inventory = parser.get_run_inventory('Mini Diagnostic Study')
+        self.assertEqual(inventory['continuity']['n_runs'], 2)
+        self.assertEqual(inventory['continuity']['n_sensor_run_records'], 4)
+        self.assertEqual(inventory['measurement_records_total'], 4)
+        self.assertIn('sensor-run records', inventory['note'])
+        self.assertNotIn('runs_total', inventory)
+        self.assertIn('do not by themselves prove', inventory['continuity']['alignment_note'])
 
     def test_protocol_details_use_wrapper_protocol_and_parameter_apis(self):
         parser = load_from_file(str(FIXTURE))

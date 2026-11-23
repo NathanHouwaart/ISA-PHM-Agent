@@ -5,10 +5,10 @@ Loads an ISA-PHM JSON file, builds a lookup index of all @id references,
 and exposes clean query methods used by the tool functions.
 
 Post-upgrade additions (2026-04-23):
-- get_ai_context: normalized semantic manifest (factors + types, assay types,
+- get_ai_context: metadata summary (factors + types, assay types,
   experiment_type, PHM objective classification).
 - validate_dataset: structured issue report (errors/warnings/info) across
-  schema, file linkage, and PHM semantic gates.
+  schema, file linkage, and factor type checks.
 - get_experiment_matrix: per-study factor × value matrix with coverage %.
 - get_run_inventory: per-sample run ordering + factor values + file paths.
 - get_label_coverage: per-study fault/operating label presence summary.
@@ -57,9 +57,8 @@ def _normalize_rel(p: str) -> str:
     return p.replace("\\", "/").lstrip("./").lstrip("/").strip().lower()
 
 
-FAULT_LIKE_TYPES = {"damage", "fault", "fault type", "fault severity"}
-OPERATING_LIKE_TYPES = {"operating condition", "operating_condition", "load", "speed"}
-DEGRADATION_LIKE_NAMES = {"vb", "rul", "wear", "flank", "degradation"}
+FAULT_LIKE_TYPES = {"damage", "qualitative fault specification", "quantitative fault specification"}
+OPERATING_LIKE_TYPES = {"operating condition"}
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +293,7 @@ class ISAParser:
 
     def _find_assay(self, study: dict, sensor_alias: str) -> dict | None:
         for a in study.get("assays", []):
-            alias = self._comment_value(a.get("comments", []), "sensor alias")
+            alias = self._comment_value(a.get("comments", []), "sensor_alias") or self._comment_value(a.get("comments", []), "sensor alias")
             if alias.lower() == sensor_alias.lower():
                 return a
         return None
@@ -319,7 +318,7 @@ class ISAParser:
         return out
 
     def _assay_alias(self, assay: dict) -> str:
-        return self._comment_value(assay.get("comments", []), "sensor alias")
+        return self._comment_value(assay.get("comments", []), "sensor_alias") or self._comment_value(assay.get("comments", []), "sensor alias")
 
     def _assay_measurement_type(self, assay: dict) -> str:
         return assay.get("measurementType", {}).get("annotationValue", "")
@@ -379,6 +378,19 @@ class ISAParser:
         result = []
         for s in self.data.get("studies", []):
             wrapper_summary = wrapper_summaries.get(s.get("title", ""))
+            run_counts = {}
+            if wrapper_summary is not None:
+                try:
+                    wrapper_study = self.wrapper.study(wrapper_summary.study_id)
+                    run_lists = [wrapper_study.assay(assay.assay_id).list_runs() for assay in wrapper_study.list_assays()]
+                    run_ids = {run.run_id for runs in run_lists for run in runs}
+                    run_counts = {
+                        "distinct_run_ids": len(run_ids),
+                        "sensor_run_records": sum(len(runs) for runs in run_lists),
+                        "run_count_note": "Distinct run IDs are labels and do not prove synchronization across sensors.",
+                    }
+                except Exception:
+                    pass
             assay_aliases = []
             for a in s.get("assays", []):
                 alias = self._assay_alias(a)
@@ -394,6 +406,7 @@ class ISAParser:
                 "number_of_assays": wrapper_summary.n_assays if wrapper_summary else len(s.get("assays", [])),
                 "sensor_aliases": assay_aliases,
                 "number_of_samples": len(s.get("materials", {}).get("samples", [])),
+                **run_counts,
                 "factors": [f.get("factorName", "") for f in s.get("factors", [])],
             })
         return _cap_list(result, "studies")
@@ -680,27 +693,23 @@ class ISAParser:
         return matches
 
     # ------------------------------------------------------------------
-    # Upgrade (2026-04-23): semantic helpers
+    # Metadata helpers
     # ------------------------------------------------------------------
 
     def _classify_factor(self, factor: dict) -> str:
-        """Classify a factor as fault / operating / degradation / other based on
-        its factorType and factorName."""
+        """Group factors using their explicit recorded type."""
         ftype = self._factor_type(factor).lower().strip()
-        fname = (factor.get("factorName") or "").lower().strip()
 
         if ftype in FAULT_LIKE_TYPES:
             return "fault"
         if ftype in OPERATING_LIKE_TYPES:
             return "operating_condition"
-        if any(k in fname for k in DEGRADATION_LIKE_NAMES):
-            return "degradation"
         return "other"
 
-    def get_ai_context(self, include_semantics: bool = True) -> dict:
+    def get_ai_context(self) -> dict:
         """Normalized PHM view of the investigation: experiment_type, studies
-        with factor classifications, assay measurement types, and a semantic
-        manifest. Use this before analysis; everything is derived from metadata,
+        with factor classifications, assay measurement types, and a metadata
+        summary. Use this before analysis; everything is derived from metadata,
         no CSV access needed."""
         overview = self.get_investigation_overview()
         studies_out = []
@@ -755,27 +764,26 @@ class ISAParser:
             "phm_objective": self.classify_phm_objective(),
         }
 
-        if include_semantics:
-            fault_factors = []
-            operating_factors = []
-            degradation_factors = []
-            for s in studies_out:
-                for f in s["factors"]:
-                    entry = {"study": s["title"], "factor": f["name"], "unit": f["unit"], "type": f["type"]}
-                    if f["phm_class"] == "fault":
-                        fault_factors.append(entry)
-                    elif f["phm_class"] == "operating_condition":
-                        operating_factors.append(entry)
-                    elif f["phm_class"] == "degradation":
-                        degradation_factors.append(entry)
+        fault_factors = []
+        operating_factors = []
+        degradation_factors = []
+        for s in studies_out:
+            for f in s["factors"]:
+                entry = {"study": s["title"], "factor": f["name"], "unit": f["unit"], "type": f["type"]}
+                if f["phm_class"] == "fault":
+                    fault_factors.append(entry)
+                elif f["phm_class"] == "operating_condition":
+                    operating_factors.append(entry)
+                elif f["phm_class"] == "degradation":
+                    degradation_factors.append(entry)
 
-            result["semantic_manifest"] = {
-                "fault_factors": fault_factors,
-                "operating_condition_factors": operating_factors,
-                "degradation_factors": degradation_factors,
-                "all_factor_names": sorted(all_factor_names),
-                "all_measurement_types": sorted(all_measurement_types),
-            }
+        result["metadata_summary"] = {
+            "fault_factors": fault_factors,
+            "operating_condition_factors": operating_factors,
+            "degradation_factors": degradation_factors,
+            "all_factor_names": sorted(all_factor_names),
+            "all_measurement_types": sorted(all_measurement_types),
+        }
 
         return result
 
@@ -853,12 +861,11 @@ class ISAParser:
 
     def validate_dataset(
         self,
-        semantic_strict: bool = False,
         check_merge: bool = False,
         merge_target_parser: "ISAParser | None" = None,
     ) -> dict:
         """Run the 4 PHM quality gates:
-        1) structural, 2) semantic, 3) prognostic readiness,
+        1) structural, 2) factor types, 3) prognostic readiness,
         4) merge readiness (only if check_merge=True; needs merge_target_parser)."""
         errors: list[str] = []
         warnings: list[str] = []
@@ -892,21 +899,9 @@ class ISAParser:
 
         structural_error_count = len(errors)
 
-        # Gate 2 — PHM semantic
-        ctx = self.get_ai_context(include_semantics=True)
-        sm = ctx["semantic_manifest"]
-        if not sm["fault_factors"] and not sm["degradation_factors"]:
-            msg = "No fault-type or degradation factors found across any study."
-            if semantic_strict:
-                errors.append(msg)
-            else:
-                warnings.append(msg)
-        if not sm["operating_condition_factors"]:
-            msg = "No operating-condition factors found across any study."
-            if semantic_strict:
-                errors.append(msg)
-            else:
-                warnings.append(msg)
+        # Use the recorded metadata for optional comparison and objective checks.
+        ctx = self.get_ai_context()
+        sm = ctx["metadata_summary"]
 
         # Gate 3 — PHM ambition
         objective = ctx["phm_objective"]
@@ -931,8 +926,8 @@ class ISAParser:
                     "check_merge=True but no merge_target_parser provided; skipped merge gate."
                 )
             else:
-                target_ctx = merge_target_parser.get_ai_context(include_semantics=True)
-                target_sm = target_ctx["semantic_manifest"]
+                target_ctx = merge_target_parser.get_ai_context()
+                target_sm = target_ctx["metadata_summary"]
                 this_factors = set(sm["all_factor_names"])
                 target_factors = set(target_sm["all_factor_names"])
                 this_mtypes = set(sm["all_measurement_types"])
@@ -960,16 +955,10 @@ class ISAParser:
                         f"({ctx['experiment_type']} vs {target_ctx['experiment_type']}). "
                         "Cross-type fusion is rarely meaningful."
                     )
-                    if semantic_strict:
-                        errors.append(msg)
-                    else:
-                        warnings.append(msg)
+                    warnings.append(msg)
                 if not shared_mtypes:
                     msg = "Merge gate: no shared sensor measurement types between datasets."
-                    if semantic_strict:
-                        errors.append(msg)
-                    else:
-                        warnings.append(msg)
+                    warnings.append(msg)
                 if not shared_factors:
                     warnings.append(
                         "Merge gate: no shared study factor names — factor crosswalk required."
@@ -996,7 +985,6 @@ class ISAParser:
             "merge_details": merge_details if check_merge else None,
             "gate_summary": {
                 "1_structural": "partial" if not structural_error_count else "fail",
-                "2_semantic": "partial" if sm["operating_condition_factors"] and (sm["fault_factors"] or sm["degradation_factors"]) else "warn",
                 "3_ambition": "partial" if objective["objective"] != "unknown" and not objective["inconsistency_warning"] else "warn",
                 "4_merge_readiness": merge_status,
             },
@@ -1093,12 +1081,26 @@ class ISAParser:
                 expected_runs = int(
                     self._comment_value(study.get("comments", []), "total_runs") or 0
                 )
+                # The Wrapper returns one row per assay and run. The same run
+                # identifier can therefore occur once for each sensor: rows
+                # are measurement records, not independent study runs.
+                distinct_run_ids = {row["run_id"] for row in runs if row["run_id"]}
+                n_run_ids = len(distinct_run_ids)
                 continuity = {
-                    "n_runs": len(runs),
+                    "n_runs": n_run_ids,
+                    "n_sensor_run_records": len(runs),
                     "declared_total_runs": expected_runs,
-                    "match": expected_runs == len(runs) if expected_runs else None,
+                    "match": expected_runs == n_run_ids if expected_runs else None,
+                    "count_basis": "distinct Wrapper run identifiers across assays",
+                    "alignment_note": (
+                        "Matching run identifiers across sensors do not by themselves prove "
+                        "that measurements are synchronized."
+                    ),
                 }
-                runs_capped, runs_total, runs_truncated = _cap_records(runs)
+                # Interleave sensors by run so a capped result does not consist
+                # solely of the first sensor's measurements.
+                runs.sort(key=lambda row: (row["run_index"] or 0, row["assay_id"] or ""))
+                runs_capped, records_total, runs_truncated = _cap_records(runs)
                 result = {
                     "study": study_proxy.title,
                     "runs": runs_capped,
@@ -1106,12 +1108,12 @@ class ISAParser:
                 }
                 if runs_truncated:
                     result["_truncated"] = True
-                    result["runs_total"] = runs_total
-                    result["runs_shown"] = len(runs_capped)
+                    result["measurement_records_total"] = records_total
+                    result["measurement_records_shown"] = len(runs_capped)
                     result["note"] = (
-                        f"Showing the first {len(runs_capped)} of {runs_total} runs to stay "
-                        "within the model's token limit. Ask about a specific run or sensor "
-                        "to retrieve the rest."
+                        f"Showing {len(runs_capped)} of {records_total} sensor-run records "
+                        f"across {n_run_ids} distinct run identifiers to stay within the "
+                        "model's token limit. Use sensor-specific tools for more details."
                     )
                 return result
             except Exception:
@@ -1582,11 +1584,6 @@ class ISAParser:
     # Sensor-to-visualization compatibility (Playbook §2.3)
     # ------------------------------------------------------------------
 
-    # Measurement types that are intrinsically high-rate enough for FFT/PSD/Spectrogram
-    HIGH_RATE_MTYPES = {"vibration", "acoustic emission", "current", "voltage", "force", "microphone", "audio"}
-    # Sensor aliases that hint at slow process variables
-    LOW_RATE_HINTS = {"temp", "temperature", "pressure", "rpm", "speed", "load_cell"}
-
     def get_sensor_compatibility(self, study_title: str, sensor_alias: str) -> dict | str:
         """Return whether the sensor is high-rate / low-rate / unknown and
         which plot kinds are compatible. Used by the agent before generating
@@ -1600,14 +1597,15 @@ class ISAParser:
             aliases = [self._assay_alias(a) for a in study.get("assays", [])]
             return f"Sensor '{sensor_alias}' not found in study '{study_title}'. Available sensors: {aliases}"
 
-        mtype = (self._assay_measurement_type(assay) or "").lower()
-        tech = (assay.get("technologyType", {}).get("annotationValue", "") or "").lower()
-        alias = (sensor_alias or "").lower()
-
-        # Try to infer sampling rate from process parameters
-        sampling_rate_hz: float | None = None
+        # Read only the standard measurement parameter; do not infer a rate
+        # or sensor tier from names or technology labels.
+        sampling_rates: set[float] = set()
+        sampling_rate_unavailable = False
         for proc in assay.get("processSequence", []):
             proto = self._resolve(proc.get("executesProtocol", {}))
+            if isinstance(proto, dict) and not proto.get("parameters"):
+                protocol_id = proto.get("@id")
+                proto = next((item for item in study.get("protocols", []) if item.get("@id") == protocol_id), proto)
             pmap = {}
             if isinstance(proto, dict):
                 for pp in proto.get("parameters", []):
@@ -1617,30 +1615,21 @@ class ISAParser:
                 val = pv.get("value", "")
                 unit_obj = self._resolve(pv.get("unit", {})) if pv.get("unit") else {}
                 unit = (unit_obj.get("annotationValue", "") if isinstance(unit_obj, dict) else "").lower()
-                if "sample" in pname and "rate" in pname or pname in {"fs", "sampling rate"}:
+                if " ".join(pname.split()) == "sampling rate":
                     try:
-                        rate = float(val)
-                        if "khz" in unit:
-                            rate *= 1000
-                        sampling_rate_hz = rate
+                        multiplier = {"hz": 1, "khz": 1000, "mhz": 1000000}.get(unit.strip())
+                        rate = float(str(val).replace(",", "."))
+                        if multiplier is not None and rate > 0:
+                            sampling_rates.add(rate * multiplier)
+                        else:
+                            sampling_rate_unavailable = True
                     except (TypeError, ValueError):
-                        pass
+                        sampling_rate_unavailable = True
 
-        # Tier classification
-        is_high_rate = (
-            any(h in mtype for h in self.HIGH_RATE_MTYPES)
-            or any(h in tech for h in self.HIGH_RATE_MTYPES)
-        )
-        is_low_rate_hint = any(h in alias for h in self.LOW_RATE_HINTS) or any(
-            h in mtype for h in {"temperature", "pressure", "rpm"}
-        )
+        sampling_rate_hz = next(iter(sampling_rates)) if len(sampling_rates) == 1 and not sampling_rate_unavailable else None
 
         if sampling_rate_hz is not None:
             tier = "high_rate" if sampling_rate_hz >= 1000 else "low_rate"
-        elif is_high_rate and not is_low_rate_hint:
-            tier = "high_rate"
-        elif is_low_rate_hint:
-            tier = "low_rate"
         else:
             tier = "unknown"
 
